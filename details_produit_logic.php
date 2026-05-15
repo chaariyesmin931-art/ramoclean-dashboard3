@@ -1,7 +1,6 @@
 <?php require_once("auth.php"); ?>
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success = "";
 $error   = "";
@@ -10,6 +9,13 @@ $warning = "";
 /* Get product ID from URL */
 $id = isset($_GET['id']) ? intval($_GET['id']) : 0;
 if ($id <= 0) { header("Location: produit.php"); exit(); }
+
+$produitCollection = $db->produit;
+$familleCollection = $db->famille;
+$prodmatCollection = $db->prodmat;
+$matiereCollection = $db->matiere;
+$stockMatiereCollection = $db->stock_matiere;
+$stockProduitCollection = $db->stock_produit;
 
 /* =============================================
    ADD MATIERE TO PRODUCT RECIPE (prodmat)
@@ -21,15 +27,15 @@ if (isset($_POST['add_matiere'])) {
     if ($idMat <= 0 || $qte <= 0) {
         $error = "Veuillez sélectionner une matière et une quantité valide.";
     } else {
-        /* Check if already linked */
-        $check = $conn->query("SELECT * FROM prodmat WHERE IdProduit=$id AND IdMatiere=$idMat");
-        if ($check->num_rows > 0) {
-            /* Update existing */
-            $conn->query("UPDATE prodmat SET qte=$qte WHERE IdProduit=$id AND IdMatiere=$idMat");
-            $success = "Quantité de matière mise à jour.";
-        } else {
-            $conn->query("INSERT INTO prodmat (IdProduit, IdMatiere, qte) VALUES ($id, $idMat, $qte)");
-            $success = "Matière ajoutée à la recette du produit.";
+        try {
+            $prodmatCollection->updateOne(
+                ['IdProduit' => $id, 'IdMatiere' => $idMat],
+                ['$set' => ['IdProduit' => $id, 'IdMatiere' => $idMat, 'qte' => $qte]],
+                ['upsert' => true]
+            );
+            $success = "Matière ajoutée/mise à jour dans la recette.";
+        } catch (Exception $e) {
+            $error = "Erreur : " . $e->getMessage();
         }
     }
 }
@@ -39,14 +45,13 @@ if (isset($_POST['add_matiere'])) {
    ============================================= */
 if (isset($_GET['remove_mat'])) {
     $idMat = intval($_GET['remove_mat']);
-    $conn->query("DELETE FROM prodmat WHERE IdProduit=$id AND IdMatiere=$idMat");
+    $prodmatCollection->deleteOne(['IdProduit' => $id, 'IdMatiere' => $idMat]);
     header("Location: details_produit.php?id=$id&success=Matière+supprimée+de+la+recette");
     exit();
 }
 
 /* =============================================
-   PRODUCE STOCK — add qty to stock_produit,
-   subtract from stock_matiere
+   PRODUCE STOCK
    ============================================= */
 if (isset($_POST['produce'])) {
     $qte_prod  = intval($_POST['qte_produce']);
@@ -57,17 +62,23 @@ if (isset($_POST['produce'])) {
     } else {
         /* Load recipe */
         $recipe = [];
-        $resRecipe = $conn->query("
-            SELECT prodmat.IdMatiere, prodmat.qte as needed,
-                   matiere.NomMat,
-                   COALESCE(SUM(stock_matiere.qte), 0) as stock
-            FROM prodmat
-            JOIN matiere ON prodmat.IdMatiere = matiere.IdMatiere
-            LEFT JOIN stock_matiere ON stock_matiere.IdMatiere = prodmat.IdMatiere
-            WHERE prodmat.IdProduit = $id
-            GROUP BY prodmat.IdMatiere, prodmat.qte, matiere.NomMat
-        ");
-        while ($r = $resRecipe->fetch_assoc()) $recipe[] = $r;
+        $resRecipe = $prodmatCollection->find(['IdProduit' => $id]);
+        foreach ($resRecipe as $r) {
+            $rArray = (array) $r;
+            $matInfo = $matiereCollection->findOne(['IdMatiere' => $rArray['IdMatiere']]);
+            $rArray['NomMat'] = $matInfo ? $matInfo['NomMat'] : 'Inconnu';
+            $rArray['needed'] = $rArray['qte'];
+            
+            // Get stock for this matiere
+            $stockCursor = $stockMatiereCollection->find(['IdMatiere' => $rArray['IdMatiere']]);
+            $totalStock = 0;
+            foreach ($stockCursor as $sc) {
+                $totalStock += $sc['qte'] ?? 0;
+            }
+            $rArray['stock'] = $totalStock;
+            
+            $recipe[] = $rArray;
+        }
 
         /* Check if enough stock for each material */
         $shortages = [];
@@ -83,7 +94,6 @@ if (isset($_POST['produce'])) {
             $warning = implode("<br>", $shortages);
         } else {
             /* Proceed with production */
-            $conn->begin_transaction();
             try {
                 /* Subtract materials from stock */
                 foreach ($recipe as $r) {
@@ -91,39 +101,48 @@ if (isset($_POST['produce'])) {
                     $idMat = $r['IdMatiere'];
 
                     /* Get all stock rows for this material ordered oldest first */
-                    $stockRows = $conn->query("SELECT idsm, qte FROM stock_matiere WHERE IdMatiere=$idMat ORDER BY idsm ASC");
+                    $stockRows = $stockMatiereCollection->find(['IdMatiere' => $idMat], ['sort' => ['idsm' => 1]]);
                     $toSubtract = $required;
 
-                    while ($toSubtract > 0 && $row = $stockRows->fetch_assoc()) {
-                        if ($row['qte'] <= $toSubtract) {
-                            $toSubtract -= $row['qte'];
-                            $conn->query("DELETE FROM stock_matiere WHERE idsm={$row['idsm']}");
+                    foreach ($stockRows as $row) {
+                        if ($toSubtract <= 0) break;
+                        
+                        $rowArray = (array) $row;
+                        if ($rowArray['qte'] <= $toSubtract) {
+                            $toSubtract -= $rowArray['qte'];
+                            $stockMatiereCollection->deleteOne(['idsm' => $rowArray['idsm']]);
                         } else {
-                            $newQte = $row['qte'] - $toSubtract;
-                            $conn->query("UPDATE stock_matiere SET qte=$newQte WHERE idsm={$row['idsm']}");
+                            $newQte = $rowArray['qte'] - $toSubtract;
+                            $stockMatiereCollection->updateOne(['idsm' => $rowArray['idsm']], ['$set' => ['qte' => $newQte]]);
                             $toSubtract = 0;
                         }
                     }
-                    /* If forced and not enough stock, we just go to 0 — already handled above */
                 }
 
                 /* Add to stock_produit */
-                $existing = $conn->query("SELECT idsp, qte FROM stock_produit WHERE IdProduit=$id LIMIT 1");
-                if ($existing->num_rows > 0) {
-                    $row = $existing->fetch_assoc();
-                    $newQte = $row['qte'] + $qte_prod;
-                    $conn->query("UPDATE stock_produit SET qte=$newQte WHERE idsp={$row['idsp']}");
+                $existing = $stockProduitCollection->findOne(['IdProduit' => $id]);
+                if ($existing) {
+                    $existingArray = (array) $existing;
+                    $newQte = ($existingArray['qte'] ?? 0) + $qte_prod;
+                    // Provide a default empty query to ensure updateOne signature matches if idsp is missing
+                    $query = isset($existingArray['idsp']) ? ['idsp' => $existingArray['idsp']] : ['IdProduit' => $id];
+                    $stockProduitCollection->updateOne($query, ['$set' => ['qte' => $newQte]]);
                 } else {
                     /* Get IdFamille for this product */
-                    $fam = $conn->query("SELECT IdFamille FROM produit WHERE IdProduit=$id")->fetch_assoc();
-                    $conn->query("INSERT INTO stock_produit (IdProduit, IdFamille, qte) VALUES ($id, {$fam['IdFamille']}, $qte_prod)");
+                    $prod = $produitCollection->findOne(['IdProduit' => $id]);
+                    $famId = $prod ? $prod['IdFamille'] : 0;
+                    $idsp = time() + rand(1, 1000); // Generate unique idsp
+                    $stockProduitCollection->insertOne([
+                        'idsp' => $idsp,
+                        'IdProduit' => $id,
+                        'IdFamille' => $famId,
+                        'qte' => $qte_prod
+                    ]);
                 }
 
-                $conn->commit();
                 $success = "$qte_prod unité(s) produite(s) et ajoutée(s) au stock avec succès.";
 
             } catch (Exception $e) {
-                $conn->rollback();
                 $error = "Erreur lors de la production : " . $e->getMessage();
             }
         }
@@ -133,43 +152,68 @@ if (isset($_POST['produce'])) {
 /* =============================================
    LOAD PRODUCT DATA
    ============================================= */
-$res = $conn->query("
-    SELECT produit.*, famille.NomFamille, famille.typee, famille.arome, famille.tva,
-           COALESCE(SUM(stock_produit.qte), 0) AS stock_total
-    FROM produit
-    LEFT JOIN famille ON produit.IdFamille = famille.IdFamille
-    LEFT JOIN stock_produit ON produit.IdProduit = stock_produit.IdProduit
-    WHERE produit.IdProduit = $id
-    GROUP BY produit.IdProduit
-");
+$produit = $produitCollection->findOne(['IdProduit' => $id]);
+if (!$produit) { header("Location: produit.php"); exit(); }
+$produit = (array) $produit;
 
-if ($res->num_rows === 0) { header("Location: produit.php"); exit(); }
-$produit = $res->fetch_assoc();
+// Get Famille
+$famInfo = $familleCollection->findOne(['IdFamille' => $produit['IdFamille']]);
+if ($famInfo) {
+    $produit['NomFamille'] = $famInfo['NomFamille'];
+    $produit['typee'] = $famInfo['typee'];
+    $produit['arome'] = $famInfo['arome'];
+    $produit['tva'] = $famInfo['tva'];
+} else {
+    $produit['NomFamille'] = 'Inconnue';
+    $produit['typee'] = '';
+    $produit['arome'] = '';
+    $produit['tva'] = 0;
+}
+
+// Get Stock
+$stockDocs = $stockProduitCollection->find(['IdProduit' => $id]);
+$totalStock = 0;
+foreach ($stockDocs as $sd) {
+    $totalStock += $sd['qte'] ?? 0;
+}
+$produit['stock_total'] = $totalStock;
 
 /* Load recipe (materials needed) */
-$resMatNeeded = $conn->query("
-    SELECT prodmat.IdMatiere, prodmat.qte AS needed,
-           matiere.NomMat, matiere.typee AS mat_type,
-           COALESCE(SUM(stock_matiere.qte), 0) AS mat_stock
-    FROM prodmat
-    JOIN matiere ON prodmat.IdMatiere = matiere.IdMatiere
-    LEFT JOIN stock_matiere ON stock_matiere.IdMatiere = prodmat.IdMatiere
-    WHERE prodmat.IdProduit = $id
-    GROUP BY prodmat.IdMatiere, prodmat.qte, matiere.NomMat, matiere.typee
-");
 $materiaux = [];
-while ($r = $resMatNeeded->fetch_assoc()) $materiaux[] = $r;
+$resMatNeeded = $prodmatCollection->find(['IdProduit' => $id]);
+foreach ($resMatNeeded as $pm) {
+    $pmArray = (array) $pm;
+    $matInfo = $matiereCollection->findOne(['IdMatiere' => $pmArray['IdMatiere']]);
+    if ($matInfo) {
+        $pmArray['NomMat'] = $matInfo['NomMat'];
+        $pmArray['mat_type'] = $matInfo['typee'];
+    } else {
+        $pmArray['NomMat'] = 'Inconnu';
+        $pmArray['mat_type'] = '';
+    }
+    
+    // Get Stock for this material
+    $scursor = $stockMatiereCollection->find(['IdMatiere' => $pmArray['IdMatiere']]);
+    $mstock = 0;
+    foreach ($scursor as $sc) {
+        $mstock += $sc['qte'] ?? 0;
+    }
+    $pmArray['mat_stock'] = $mstock;
+    $pmArray['needed'] = $pmArray['qte'];
+    
+    $materiaux[] = $pmArray;
+}
 
 /* Load all available matieres for the add form */
-$resAllMat = $conn->query("SELECT IdMatiere, NomMat, typee FROM matiere ORDER BY NomMat");
 $allMatieres = [];
-while ($r = $resAllMat->fetch_assoc()) $allMatieres[] = $r;
+$resAllMat = $matiereCollection->find([], ['sort' => ['NomMat' => 1]]);
+foreach ($resAllMat as $m) $allMatieres[] = (array) $m;
 
 /* Max producible based on current stock */
 $maxProducible = PHP_INT_MAX;
 foreach ($materiaux as $m) {
-    if ($m['needed'] > 0) {
-        $maxProducible = min($maxProducible, floor($m['mat_stock'] / $m['needed']));
+    if (($m['needed'] ?? 0) > 0) {
+        $maxProducible = min($maxProducible, floor(($m['mat_stock'] ?? 0) / $m['needed']));
     }
 }
 if ($maxProducible === PHP_INT_MAX) $maxProducible = 0;
@@ -177,5 +221,4 @@ if ($maxProducible === PHP_INT_MAX) $maxProducible = 0;
 /* Pass along success from redirect */
 if (isset($_GET['success'])) $success = htmlspecialchars($_GET['success']);
 
-$conn->close();
 ?>

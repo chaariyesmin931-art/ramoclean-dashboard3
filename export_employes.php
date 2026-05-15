@@ -3,31 +3,23 @@
 header("Content-Type: application/vnd.ms-excel");
 header("Content-Disposition: attachment; filename=employes.xls");
 
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
-$sql = "
-SELECT
-    Cin,
-    COALESCE(Nom, '') AS 'Nom',
-    COALESCE(Prenom, '') AS 'Prénom',
-    Email,
-    NumTel AS 'Téléphone'
-FROM employeur
-ORDER BY Nom, Prenom
-";
+$employeurCollection = $db->employeur;
 
-$result = $conn->query($sql);
+$cursor = $employeurCollection->find([], ['sort' => ['Nom' => 1, 'Prenom' => 1]]);
 
 echo "CIN\tNom\tPrénom\tEmail\tTéléphone\n";
 
-while ($row = $result->fetch_assoc()) {
-    echo $row['Cin']       . "\t" .
-         $row['Nom']       . "\t" .
-         $row['Prénom']    . "\t" .
-         $row['Email']     . "\t" .
-         $row['Téléphone'] . "\n";
+foreach ($cursor as $row) {
+    $rowArray = (array) $row;
+    $nom = isset($rowArray['Nom']) ? $rowArray['Nom'] : '';
+    $prenom = isset($rowArray['Prenom']) ? $rowArray['Prenom'] : '';
+    
+    echo ($rowArray['Cin'] ?? '')       . "\t" .
+         $nom                           . "\t" .
+         $prenom                        . "\t" .
+         ($rowArray['Email'] ?? '')     . "\t" .
+         ($rowArray['NumTel'] ?? '')    . "\n";
 }
-
-$conn->close();
 ?>

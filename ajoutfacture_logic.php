@@ -1,6 +1,5 @@
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success  = "";
 $error    = "";
@@ -9,12 +8,20 @@ $shortages = [];          /* list of shortage details */
 
 $allowed_types = ['fact', 'bdl', 'devis'];
 
+$clientCollection = $db->client;
+$factureCollection = $db->facture;
+$prodfactCollection = $db->prodfact;
+$produitCollection = $db->produit;
+$stockProduitCollection = $db->stock_produit;
+$familleCollection = $db->famille;
+$countersCollection = $db->counters; // to simulate auto_increment for NumFact
+
 /* =============================================
    HANDLE CREATION
    ============================================= */
 if (isset($_POST['create_facture'])) {
-    $matfis  = mysqli_real_escape_string($conn, trim($_POST['MatFis']));
-    $date    = mysqli_real_escape_string($conn, trim($_POST['datefact']));
+    $matfis  = trim($_POST['MatFis']);
+    $date    = trim($_POST['datefact']);
     $type    = in_array($_POST['TypeFact'], $allowed_types) ? $_POST['TypeFact'] : 'fact';
     $force   = isset($_POST['force_create']); /* user confirmed despite shortage */
     $payment = 0;
@@ -40,8 +47,8 @@ if (isset($_POST['create_facture'])) {
     } elseif (empty($lignes)) {
         $error = "Ajoutez au moins un produit.";
     } else {
-        $checkClient = $conn->query("SELECT MatFis FROM client WHERE MatFis='$matfis'");
-        if ($checkClient->num_rows === 0) {
+        $checkClient = $clientCollection->countDocuments(['MatFis' => $matfis]);
+        if ($checkClient === 0) {
             $error = "Client introuvable.";
         } else {
 
@@ -51,17 +58,14 @@ if (isset($_POST['create_facture'])) {
                     $pid = $l['id'];
                     $qteNeeded = $l['qte'];
 
-                    $resStock = $conn->query("
-                        SELECT produit.NomProduit,
-                               COALESCE(SUM(stock_produit.qte), 0) AS stock_dispo
-                        FROM produit
-                        LEFT JOIN stock_produit ON produit.IdProduit = stock_produit.IdProduit
-                        WHERE produit.IdProduit = $pid
-                        GROUP BY produit.IdProduit
-                    ");
-                    $stockRow = $resStock->fetch_assoc();
-                    $stockDispo = intval($stockRow['stock_dispo'] ?? 0);
-                    $nomProduit = $stockRow['NomProduit'] ?? "Produit #$pid";
+                    $prodInfo = $produitCollection->findOne(['IdProduit' => $pid]);
+                    $nomProduit = $prodInfo ? $prodInfo['NomProduit'] : "Produit #$pid";
+                    
+                    $stockDocs = $stockProduitCollection->find(['IdProduit' => $pid]);
+                    $stockDispo = 0;
+                    foreach ($stockDocs as $sd) {
+                        $stockDispo += $sd['qte'] ?? 0;
+                    }
 
                     if ($stockDispo < $qteNeeded) {
                         $shortages[] = [
@@ -82,17 +86,31 @@ if (isset($_POST['create_facture'])) {
             }
 
             /* ---- Proceed with creation ---- */
-            $conn->begin_transaction();
             try {
+                // Generate next sequence for NumFact
+                $counter = $countersCollection->findOneAndUpdate(
+                    ['_id' => 'factureId'],
+                    ['$inc' => ['seq' => 1]],
+                    ['upsert' => true, 'returnDocument' => MongoDB\Operation\FindOneAndUpdate::RETURN_DOCUMENT_AFTER]
+                );
+                $numFact = $counter->seq;
+
                 /* 1. Insert facture */
-                $conn->query("INSERT INTO facture (MatFis, TypeFact, datefact, payment)
-                              VALUES ('$matfis', '$type', '$date', $payment)");
-                $numFact = $conn->insert_id;
+                $factureCollection->insertOne([
+                    'NumFact' => $numFact,
+                    'MatFis' => $matfis,
+                    'TypeFact' => $type,
+                    'datefact' => $date,
+                    'payment' => $payment
+                ]);
 
                 /* 2. Insert product lines */
                 foreach ($lignes as $l) {
-                    $conn->query("INSERT INTO prodfact (NumFact, IdProduit, qte)
-                                  VALUES ($numFact, {$l['id']}, {$l['qte']})");
+                    $prodfactCollection->insertOne([
+                        'NumFact' => $numFact,
+                        'IdProduit' => $l['id'],
+                        'qte' => $l['qte']
+                    ]);
                 }
 
                 /* 3. Deduct from stock_produit (fact only) */
@@ -101,29 +119,31 @@ if (isset($_POST['create_facture'])) {
                         $pid         = $l['id'];
                         $qteToRemove = $l['qte'];
 
-                        $stockRows = $conn->query(
-                            "SELECT idsp, qte FROM stock_produit
-                             WHERE IdProduit = $pid ORDER BY idsp ASC"
-                        );
-                        while ($qteToRemove > 0 && $row = $stockRows->fetch_assoc()) {
-                            if ($row['qte'] <= $qteToRemove) {
-                                $conn->query("DELETE FROM stock_produit WHERE idsp = {$row['idsp']}");
-                                $qteToRemove -= $row['qte'];
+                        $stockRows = $stockProduitCollection->find(['IdProduit' => $pid], ['sort' => ['idsp' => 1]]);
+                        foreach ($stockRows as $row) {
+                            if ($qteToRemove <= 0) break;
+                            $rowArray = (array) $row;
+                            if ($rowArray['qte'] <= $qteToRemove) {
+                                $stockProduitCollection->deleteOne(['idsp' => $rowArray['idsp']]);
+                                $qteToRemove -= $rowArray['qte'];
                             } else {
-                                $newQte = $row['qte'] - $qteToRemove;
-                                $conn->query("UPDATE stock_produit SET qte = $newQte WHERE idsp = {$row['idsp']}");
+                                $newQte = $rowArray['qte'] - $qteToRemove;
+                                $stockProduitCollection->updateOne(['idsp' => $rowArray['idsp']], ['$set' => ['qte' => $newQte]]);
                                 $qteToRemove = 0;
                             }
                         }
                     }
                 }
 
-                $conn->commit();
                 header("Location: print_facture.php?id=$numFact");
                 exit();
 
             } catch (Exception $e) {
-                $conn->rollback();
+                // Manual rollback if needed
+                if (isset($numFact)) {
+                    $factureCollection->deleteOne(['NumFact' => $numFact]);
+                    $prodfactCollection->deleteMany(['NumFact' => $numFact]);
+                }
                 $error = "Erreur : " . $e->getMessage();
             }
         }
@@ -134,26 +154,40 @@ end_of_logic:
 
 /* Load clients */
 $allClients = [];
-$res = $conn->query("SELECT MatFis, NomEntreprise, Nom, Prenom, NumTel FROM client ORDER BY NomEntreprise");
-while ($c = $res->fetch_assoc()) $allClients[] = $c;
+$res = $clientCollection->find([], ['sort' => ['NomEntreprise' => 1]]);
+foreach ($res as $c) $allClients[] = (array) $c;
 
 /* Load produits with current stock */
 $allProduits = [];
-$res = $conn->query("
-    SELECT produit.IdProduit, produit.NomProduit, produit.PrixUnit,
-           produit.poid, famille.typee, famille.NomFamille, famille.tva,
-           COALESCE(SUM(stock_produit.qte), 0) AS stock
-    FROM produit
-    LEFT JOIN famille ON produit.IdFamille = famille.IdFamille
-    LEFT JOIN stock_produit ON produit.IdProduit = stock_produit.IdProduit
-    GROUP BY produit.IdProduit
-    ORDER BY produit.NomProduit
-");
-while ($p = $res->fetch_assoc()) $allProduits[] = $p;
+$res = $produitCollection->find([], ['sort' => ['NomProduit' => 1]]);
+foreach ($res as $p) {
+    $pArray = (array) $p;
+    
+    // Get Famille
+    $famInfo = $familleCollection->findOne(['IdFamille' => $pArray['IdFamille']]);
+    if ($famInfo) {
+        $pArray['typee'] = $famInfo['typee'];
+        $pArray['NomFamille'] = $famInfo['NomFamille'];
+        $pArray['tva'] = $famInfo['tva'];
+    } else {
+        $pArray['typee'] = '';
+        $pArray['NomFamille'] = 'Inconnue';
+        $pArray['tva'] = 0;
+    }
+    
+    // Get Stock
+    $stockDocs = $stockProduitCollection->find(['IdProduit' => $pArray['IdProduit']]);
+    $stockDispo = 0;
+    foreach ($stockDocs as $sd) {
+        $stockDispo += $sd['qte'] ?? 0;
+    }
+    $pArray['stock'] = $stockDispo;
+    
+    $allProduits[] = $pArray;
+}
 
 /* Next facture number */
-$resNext = $conn->query("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='ramoclean' AND TABLE_NAME='facture'");
-$nextNum = $resNext ? ($resNext->fetch_assoc()['AUTO_INCREMENT'] ?? '—') : '—';
+$nextCounter = $countersCollection->findOne(['_id' => 'factureId']);
+$nextNum = $nextCounter ? ($nextCounter->seq + 1) : 1;
 
-$conn->close();
 ?>

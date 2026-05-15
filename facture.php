@@ -26,8 +26,9 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+  $factureCollection = $db->facture;
+  $clientCollection = $db->client;
 ?>
 <?php require("insights.php"); ?>
 
@@ -126,28 +127,50 @@
   $searchf = isset($_GET['searchf']) ? trim($_GET['searchf']) : '';
   $month   = isset($_GET['month'])   ? intval($_GET['month']) : 0;
 
-  if ($activeType !== 'all')
-      $conditions[] = "facture.TypeFact = '" . mysqli_real_escape_string($conn, $activeType) . "'";
-  if ($searchf !== '')
-      $conditions[] = "(facture.NumFact LIKE '%" . mysqli_real_escape_string($conn,$searchf) . "%'
-                       OR client.NomEntreprise LIKE '%" . mysqli_real_escape_string($conn,$searchf) . "%')";
-  if ($month > 0)
-      $conditions[] = "MONTH(facture.datefact) = $month";
-
-  $where = $conditions ? 'WHERE ' . implode(' AND ', $conditions) : '';
-
-  $resCards = $conn->query("
-      SELECT facture.NumFact, facture.datefact, facture.payment, facture.TypeFact,
-             client.NomEntreprise
-      FROM facture
-      LEFT JOIN client ON facture.MatFis = client.MatFis
-      $where
-      ORDER BY facture.datefact DESC
-  ");
+  if ($activeType !== 'all') {
+      $conditions['TypeFact'] = $activeType;
+  }
+  
+  if ($searchf !== '') {
+      $clientsMatching = $clientCollection->find(['NomEntreprise' => new MongoDB\BSON\Regex($searchf, 'i')]);
+      $clientMats = [];
+      foreach ($clientsMatching as $c) {
+          $clientMats[] = $c['MatFis'];
+      }
+      
+      $orConds = [
+          ['NumFact' => (int)$searchf],
+          ['MatFis' => ['$in' => $clientMats]]
+      ];
+      if (isset($conditions['$or'])) {
+          $conditions['$and'][] = ['$or' => $orConds];
+      } else {
+          $conditions['$or'] = $orConds;
+      }
+  }
+  
+  $resCardsCursor = $factureCollection->find($conditions, ['sort' => ['datefact' => -1]]);
+  $resCards = [];
+  foreach ($resCardsCursor as $fc) {
+      $fcArray = (array) $fc;
+      
+      // Filter by month if needed (done in PHP because date is stored as string YYYY-MM-DD or similar)
+      if ($month > 0) {
+          $dateMonth = (int)date('m', strtotime($fcArray['datefact']));
+          if ($dateMonth !== $month) {
+              continue;
+          }
+      }
+      
+      $cl = $clientCollection->findOne(['MatFis' => $fcArray['MatFis']]);
+      $fcArray['NomEntreprise'] = $cl ? $cl['NomEntreprise'] : '—';
+      
+      $resCards[] = $fcArray;
+  }
   ?>
 
   <div class="data-grid">
-  <?php if($resCards && $resCards->num_rows > 0): while($row=$resCards->fetch_assoc()): ?>
+  <?php if(count($resCards) > 0): foreach($resCards as $row): ?>
     <div class="data-card">
       <?php
         $type = $row['TypeFact'];
@@ -158,14 +181,14 @@
       <h2>#<?php echo str_pad($row['NumFact'],4,"0",STR_PAD_LEFT); ?></h2>
       <h4><?php echo htmlspecialchars($row['NomEntreprise']??'—'); ?></h4>
       <p><?php echo date('d/m/Y', strtotime($row['datefact'])); ?></p>
-      <a href="details_facture.php?id=<?php echo $row['NumFact']; ?>" class="details-btn" style="margin-top:10px;">Détails</a>
+      <a href="details_facture.php?id=<?php echo urlencode($row['NumFact']); ?>" class="details-btn" style="margin-top:10px;">Détails</a>
     </div>
-  <?php endwhile; else: ?>
+  <?php endforeach; else: ?>
     <div class="empty-state">Aucun document trouvé.</div>
   <?php endif; ?>
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

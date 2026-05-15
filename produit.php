@@ -9,10 +9,58 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+
+  $produitCollection = $db->produit;
+  $familleCollection = $db->famille;
+  $stockProduitCollection = $db->stock_produit;
+
+  $searchp = isset($_GET['searchp']) ? trim($_GET['searchp']) : "";
+  $filter = [];
+  if ($searchp !== "") {
+      $famillesMatching = $familleCollection->find(['NomFamille' => new MongoDB\BSON\Regex($searchp, 'i')]);
+      $famIds = [];
+      foreach ($famillesMatching as $f) {
+          $famIds[] = $f['IdFamille'];
+      }
+      $filter = [
+          '$or' => [
+              ['NomProduit' => new MongoDB\BSON\Regex($searchp, 'i')],
+              ['IdFamille' => ['$in' => $famIds]]
+          ]
+      ];
+  }
+
+  $options = ['sort' => ['NomProduit' => 1]];
+  $produitsCursor = $produitCollection->find($filter, $options);
+  
+  $resultProduit = [];
+  foreach ($produitsCursor as $p) {
+      $pArray = (array) $p;
+      // Get Famille
+      $fam = $familleCollection->findOne(['IdFamille' => $pArray['IdFamille']]);
+      if ($fam) {
+          $pArray['NomFamille'] = $fam['NomFamille'];
+          $pArray['typee'] = $fam['typee'];
+      } else {
+          $pArray['NomFamille'] = 'Inconnue';
+          $pArray['typee'] = '';
+      }
+      
+      // Get Stock
+      $stockDocs = $stockProduitCollection->find(['IdProduit' => $pArray['IdProduit']]);
+      $totalStock = 0;
+      foreach ($stockDocs as $sd) {
+          $totalStock += $sd['qte'] ?? 0;
+      }
+      $pArray['total_qte'] = $totalStock;
+      
+      $resultProduit[] = $pArray;
+  }
+
+  $totalProduits = $produitCollection->countDocuments();
+  $totalFamilles = $familleCollection->countDocuments();
 ?>
-<?php require("insights.php"); ?>
 
 <nav>
   <div class="nav-logo-area">
@@ -66,16 +114,16 @@
   </div>
 
   <div class="data-grid">
-    <?php if($resultProduit->num_rows > 0): while($row=$resultProduit->fetch_assoc()): ?>
+    <?php if(count($resultProduit) > 0): foreach($resultProduit as $row): ?>
     <div class="data-card">
-      <span class="pill pill-green"><?php echo htmlspecialchars($row['NomFamille']); ?></span>
-      <h2><?php echo htmlspecialchars($row['NomProduit']); ?></h2>
-      <h4>Poids: <?php echo $row['Poid'].' '.htmlspecialchars($row['typee']); ?></h4>
-      <h4>Prix: <?php echo $row['PrixUnit']; ?> DT</h4>
-      <h4>Quantité: <?php echo $row['total_qte']; ?></h4>
-      <a href="details_produit.php?id=<?php echo $row['IdProduit']; ?>" class="details-btn">Détails</a>
+      <span class="pill pill-green"><?php echo htmlspecialchars($row['NomFamille'] ?? ''); ?></span>
+      <h2><?php echo htmlspecialchars($row['NomProduit'] ?? ''); ?></h2>
+      <h4>Poids: <?php echo ($row['poid'] ?? '').' '.htmlspecialchars($row['typee'] ?? ''); ?></h4>
+      <h4>Prix: <?php echo $row['PrixUnit'] ?? ''; ?> DT</h4>
+      <h4>Quantité: <?php echo $row['total_qte'] ?? 0; ?></h4>
+      <a href="details_produit.php?id=<?php echo urlencode($row['IdProduit'] ?? ''); ?>" class="details-btn">Détails</a>
     </div>
-    <?php endwhile; else: ?>
+    <?php endforeach; else: ?>
     <div class="empty-state">Aucun produit trouvé.</div>
     <?php endif; ?>
     <div class="add-card">
@@ -85,6 +133,6 @@
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

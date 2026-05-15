@@ -1,22 +1,23 @@
 <?php require_once("auth.php"); ?>
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success = "";
 $error   = "";
 
-$id = isset($_GET['id']) ? mysqli_real_escape_string($conn, $_GET['id']) : '';
+$id = isset($_GET['id']) ? trim($_GET['id']) : '';
 if ($id === '') { header("Location: employe.php"); exit(); }
+
+$collection = $db->employeur;
 
 /* =============================================
    HANDLE UPDATE
    ============================================= */
 if (isset($_POST['update_employe'])) {
-    $nom    = mysqli_real_escape_string($conn, trim($_POST['Nom']));
-    $prenom = mysqli_real_escape_string($conn, trim($_POST['Prenom']));
-    $email  = mysqli_real_escape_string($conn, trim($_POST['Email']));
-    $tel    = mysqli_real_escape_string($conn, trim($_POST['NumTel']));
+    $nom    = trim($_POST['Nom']);
+    $prenom = trim($_POST['Prenom']);
+    $email  = trim($_POST['Email']);
+    $tel    = trim($_POST['NumTel']);
 
     if ($email === "" || $tel === "") {
         $error = "L'email et le téléphone sont obligatoires.";
@@ -25,15 +26,24 @@ if (isset($_POST['update_employe'])) {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "L'adresse email n'est pas valide.";
     } else {
-        $checkTel = $conn->query("SELECT NumTel FROM employeur WHERE NumTel='$tel' AND Cin!='$id'");
-        if ($checkTel->num_rows > 0) {
+        $checkTel = $collection->countDocuments(['NumTel' => $tel, 'Cin' => ['$ne' => $id]]);
+        if ($checkTel > 0) {
             $error = "Ce numéro de téléphone est déjà utilisé par un autre employé.";
         } else {
-            $sql = "UPDATE employeur SET Nom='$nom', Prenom='$prenom',
-                    Email='$email', NumTel='$tel'
-                    WHERE Cin='$id'";
-            if ($conn->query($sql)) $success = "Employé mis à jour avec succès.";
-            else $error = "Erreur : " . $conn->error;
+            try {
+                $collection->updateOne(
+                    ['Cin' => $id],
+                    ['$set' => [
+                        'Nom' => $nom,
+                        'Prenom' => $prenom,
+                        'Email' => $email,
+                        'NumTel' => $tel
+                    ]]
+                );
+                $success = "Employé mis à jour avec succès.";
+            } catch (Exception $e) {
+                $error = "Erreur : " . $e->getMessage();
+            }
         }
     }
 }
@@ -42,20 +52,19 @@ if (isset($_POST['update_employe'])) {
    HANDLE DELETE
    ============================================= */
 if (isset($_POST['delete_employe'])) {
-    if ($conn->query("DELETE FROM employeur WHERE Cin='$id'")) {
+    try {
+        $collection->deleteOne(['Cin' => $id]);
         header("Location: employe.php?success=Employé+supprimé");
         exit();
-    } else {
-        $error = "Erreur lors de la suppression : " . $conn->error;
+    } catch (Exception $e) {
+        $error = "Erreur lors de la suppression : " . $e->getMessage();
     }
 }
 
 /* =============================================
    LOAD EMPLOYE DATA
    ============================================= */
-$res = $conn->query("SELECT * FROM employeur WHERE Cin='$id'");
-if ($res->num_rows === 0) { header("Location: employe.php"); exit(); }
-$employe = $res->fetch_assoc();
-
-$conn->close();
+$employe = $collection->findOne(['Cin' => $id]);
+if (!$employe) { header("Location: employe.php"); exit(); }
+$employe = (array) $employe;
 ?>

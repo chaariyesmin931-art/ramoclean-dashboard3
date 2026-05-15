@@ -9,10 +9,17 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+
+  $collection = $db->matiere;
+  $searchm = isset($_GET['searchm']) ? trim($_GET['searchm']) : "";
+  $filter = [];
+  if ($searchm !== "") {
+      $filter = ['NomMat' => new MongoDB\BSON\Regex($searchm, 'i')];
+  }
+  $options = ['sort' => ['NomMat' => 1]];
+  $resultMatiere = $collection->find($filter, $options)->toArray();
 ?>
-<?php require("insights.php"); ?>
 
 <nav>
   <div class="nav-logo-area">
@@ -54,13 +61,13 @@
   </div>
 
   <div class="data-grid">
-    <?php if($resultMatiere->num_rows > 0): while($row=$resultMatiere->fetch_assoc()): ?>
+    <?php if(count($resultMatiere) > 0): foreach($resultMatiere as $row): ?>
     <div class="data-card">
-      <h2><?php echo htmlspecialchars($row['NomMat']); ?></h2>
-      <h4>ID: <?php echo $row['IdMatiere']; ?></h4>
-      <a href="details_matiere.php?id=<?php echo $row['IdMatiere']; ?>" class="details-btn">Détails</a>
+      <h2><?php echo htmlspecialchars($row['NomMat'] ?? ''); ?></h2>
+      <h4>ID: <?php echo $row['IdMatiere'] ?? ''; ?></h4>
+      <a href="details_matiere.php?id=<?php echo urlencode($row['IdMatiere'] ?? ''); ?>" class="details-btn">Détails</a>
     </div>
-    <?php endwhile; else: ?>
+    <?php endforeach; else: ?>
     <div class="empty-state">Aucune matière trouvée.</div>
     <?php endif; ?>
     <div class="add-card">
@@ -70,6 +77,6 @@
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

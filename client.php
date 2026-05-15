@@ -9,10 +9,26 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+  
+  $searchc = isset($_GET['searchc']) ? trim($_GET['searchc']) : "";
+  $collection = $db->client;
+  
+  // Build query
+  $filter = [];
+  if ($searchc !== "") {
+      $filter = [
+          '$or' => [
+              ['NomEntreprise' => new MongoDB\BSON\Regex($searchc, 'i')],
+              ['NumTel' => new MongoDB\BSON\Regex($searchc, 'i')]
+          ]
+      ];
+  }
+  
+  $options = ['sort' => ['NomEntreprise' => 1]];
+  $resultClients = $collection->find($filter, $options)->toArray();
+  $totalClients = $collection->countDocuments();
 ?>
-<?php require("insights.php"); ?>
 
 <nav>
   <div class="nav-logo-area">
@@ -65,18 +81,18 @@
   </div>
 
   <div class="data-grid">
-    <?php if($resultClients->num_rows > 0): while($row=$resultClients->fetch_assoc()): ?>
+    <?php if(count($resultClients) > 0): foreach($resultClients as $row): ?>
     <div class="data-card">
-      <h2><?php echo htmlspecialchars($row['NomEntreprise']); ?></h2>
-      <h4>📞 <?php echo htmlspecialchars($row['NumTel']); ?></h4>
-      <a href="details_client.php?id=<?php echo urlencode($row['MatFis']); ?>" class="details-btn">Détails</a>
+      <h2><?php echo htmlspecialchars($row['NomEntreprise'] ?? ''); ?></h2>
+      <h4>📞 <?php echo htmlspecialchars($row['NumTel'] ?? ''); ?></h4>
+      <a href="details_client.php?id=<?php echo urlencode($row['MatFis'] ?? ''); ?>" class="details-btn">Détails</a>
     </div>
-    <?php endwhile; else: ?>
+    <?php endforeach; else: ?>
     <div class="empty-state">Aucun client trouvé.</div>
     <?php endif; ?>
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

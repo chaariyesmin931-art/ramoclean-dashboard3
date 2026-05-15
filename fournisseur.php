@@ -9,10 +9,22 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+  
+  $collection = $db->fournisseur;
+
+  $searchfn = isset($_GET['searchfn']) ? trim($_GET['searchfn']) : "";
+  $filter = [];
+  if ($searchfn !== "") {
+      $filter = [
+          'NomEntreprise' => new MongoDB\BSON\Regex($searchfn, 'i')
+      ];
+  }
+  
+  $options = ['sort' => ['NomEntreprise' => 1]];
+  $resultFournisseur = $collection->find($filter, $options)->toArray();
+  $totalFournisseurs = $collection->countDocuments();
 ?>
-<?php require("insights.php"); ?>
 
 <nav>
   <div class="nav-logo-area">
@@ -65,18 +77,18 @@
   </div>
 
   <div class="data-grid">
-    <?php if($resultFournisseur->num_rows > 0): while($row=$resultFournisseur->fetch_assoc()): ?>
+    <?php if(count($resultFournisseur) > 0): foreach($resultFournisseur as $row): ?>
     <div class="data-card">
-      <h2><?php echo htmlspecialchars($row['NomEntreprise']); ?></h2>
-      <h4>Mat: <?php echo htmlspecialchars($row['Mat']); ?></h4>
-      <a href="details_fournisseur.php?id=<?php echo urlencode($row['Mat']); ?>" class="details-btn">Détails</a>
+      <h2><?php echo htmlspecialchars($row['NomEntreprise'] ?? ''); ?></h2>
+      <h4>Mat: <?php echo htmlspecialchars($row['Mat'] ?? ''); ?></h4>
+      <a href="details_fournisseur.php?id=<?php echo urlencode($row['Mat'] ?? ''); ?>" class="details-btn">Détails</a>
     </div>
-    <?php endwhile; else: ?>
+    <?php endforeach; else: ?>
     <div class="empty-state">Aucun fournisseur trouvé.</div>
     <?php endif; ?>
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

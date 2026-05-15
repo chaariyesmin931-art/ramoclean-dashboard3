@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Facture <?php
-        $conn = new mysqli("localhost","root","","ramoclean");
+        require_once("connexion.php");
         $id   = isset($_GET['id']) ? intval($_GET['id']) : 0;
         echo str_pad($id, 4, '0', STR_PAD_LEFT);
     ?></title>
@@ -373,32 +373,56 @@
 <body>
 
 <?php
-if ($conn->connect_error) die("DB Error");
 if ($id <= 0) { header("Location: facture.php"); exit(); }
 
+$factureCollection = $db->facture;
+$clientCollection = $db->client;
+$prodfactCollection = $db->prodfact;
+$produitCollection = $db->produit;
+$familleCollection = $db->famille;
+
 /* Load facture + client */
-$resFact = $conn->query("
-    SELECT facture.*, client.NomEntreprise, client.Nom, client.Prenom,
-           client.Email, client.NumTel, client.MatFis AS ClientMat
-    FROM facture
-    LEFT JOIN client ON facture.MatFis = client.MatFis
-    WHERE facture.NumFact = $id
-");
-if ($resFact->num_rows === 0) { header("Location: facture.php"); exit(); }
-$fact = $resFact->fetch_assoc();
+$fact = $factureCollection->findOne(['NumFact' => $id]);
+if (!$fact) { header("Location: facture.php"); exit(); }
+$fact = (array) $fact;
+
+$clientInfo = $clientCollection->findOne(['MatFis' => $fact['MatFis']]);
+if ($clientInfo) {
+    $fact['NomEntreprise'] = $clientInfo['NomEntreprise'];
+    $fact['Nom'] = $clientInfo['Nom'];
+    $fact['Prenom'] = $clientInfo['Prenom'];
+    $fact['Email'] = $clientInfo['Email'];
+    $fact['NumTel'] = $clientInfo['NumTel'];
+    $fact['ClientMat'] = $clientInfo['MatFis'];
+} else {
+    $fact['NomEntreprise'] = 'Inconnu';
+    $fact['Nom'] = '';
+    $fact['Prenom'] = '';
+    $fact['Email'] = '';
+    $fact['NumTel'] = '';
+    $fact['ClientMat'] = '';
+}
 
 /* Load product lines */
-$resLines = $conn->query("
-    SELECT prodfact.qte,
-           produit.NomProduit, produit.PrixUnit, produit.poid,
-           famille.typee, famille.tva
-    FROM prodfact
-    JOIN produit  ON prodfact.IdProduit  = produit.IdProduit
-    LEFT JOIN famille ON produit.IdFamille = famille.IdFamille
-    WHERE prodfact.NumFact = $id
-");
 $lines = [];
-while ($l = $resLines->fetch_assoc()) $lines[] = $l;
+$resLines = $prodfactCollection->find(['NumFact' => $id]);
+foreach ($resLines as $l) {
+    $lArray = (array) $l;
+    $prodInfo = $produitCollection->findOne(['IdProduit' => $lArray['IdProduit']]);
+    if ($prodInfo) {
+        $lArray['NomProduit'] = $prodInfo['NomProduit'];
+        $lArray['PrixUnit'] = $prodInfo['PrixUnit'];
+        $lArray['poid'] = $prodInfo['poid'];
+        
+        $famInfo = $familleCollection->findOne(['IdFamille' => $prodInfo['IdFamille']]);
+        if ($famInfo) {
+            $lArray['typee'] = $famInfo['typee'];
+            $lArray['tva'] = $famInfo['tva'];
+        }
+    }
+    $lines[] = $lArray;
+}
+
 
 /* Totals */
 $totalHT  = 0;
@@ -458,7 +482,6 @@ function numberToWords($num) {
 $writtenAmount = ucfirst(numberToWords(intval(round($totalFinal)))) . ' dinar' . (round($totalFinal) > 1 ? 's' : '');
 $numFactStr = str_pad($id, 4, '0', STR_PAD_LEFT);
 
-$conn->close();
 ?>
 
 <!-- ACTION BAR -->

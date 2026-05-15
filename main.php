@@ -10,8 +10,7 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
 ?>
 <?php require("insights.php"); ?>
 
@@ -62,22 +61,22 @@
   <!-- BIG STAT CARDS -->
   <div class="stat">
     <div class="stat-big-card">
-      <p><?php $r=mysqli_query($conn,"SELECT COUNT(*) FROM produit"); $row=mysqli_fetch_row($r); echo $row[0]; ?></p>
+      <p><?php echo $db->produit->countDocuments(); ?></p>
       <h3>Produits</h3>
       <a href="produit.php" class="card-btn">Voir</a>
     </div>
     <div class="stat-big-card">
-      <p><?php $r=mysqli_query($conn,"SELECT COUNT(*) FROM famille"); $row=mysqli_fetch_row($r); echo $row[0]; ?></p>
+      <p><?php echo $db->famille->countDocuments(); ?></p>
       <h3>Catégories</h3>
       <a href="produit.php" class="card-btn">Voir</a>
     </div>
     <div class="stat-big-card">
-      <p><?php $r=mysqli_query($conn,"SELECT COUNT(*) FROM facture"); $row=mysqli_fetch_row($r); echo $row[0]; ?></p>
+      <p><?php echo $db->facture->countDocuments(); ?></p>
       <h3>Factures</h3>
       <a href="facture.php" class="card-btn">Voir</a>
     </div>
     <div class="stat-big-card">
-      <p><?php $r=mysqli_query($conn,"SELECT COUNT(*) FROM client"); $row=mysqli_fetch_row($r); echo $row[0]; ?></p>
+      <p><?php echo $db->client->countDocuments(); ?></p>
       <h3>Clients</h3>
       <a href="client.php" class="card-btn">Voir</a>
     </div>
@@ -102,7 +101,7 @@
 
       <div class="insight-card">
         <h3>Clients les plus actifs</h3>
-        <?php if($TopClient->num_rows > 0): while($row=$TopClient->fetch_assoc()): ?>
+        <?php if(count($TopClient) > 0): foreach($TopClient as $row): ?>
         <div class="list-row">
           <div>
             <div class="list-name"><?php echo htmlspecialchars($row['Nom'].' '.$row['Prenom']); ?></div>
@@ -110,25 +109,25 @@
           </div>
           <span class="pill pill-green"><?php echo $row['total_factures']; ?></span>
         </div>
-        <?php endwhile; else: ?>
+        <?php endforeach; else: ?>
         <p class="empty-state">Aucun client</p>
         <?php endif; ?>
       </div>
 
       <div class="insight-card">
         <h3>Factures récentes</h3>
-        <?php if($FactureRecent->num_rows > 0): while($row=$FactureRecent->fetch_assoc()): ?>
+        <?php if(count($FactureRecent) > 0): foreach($FactureRecent as $row): ?>
         <div class="list-row">
           <div class="list-name">Facture #<?php echo str_pad($row['NumFact'],4,"0",STR_PAD_LEFT); ?></div>
         </div>
-        <?php endwhile; else: ?>
+        <?php endforeach; else: ?>
         <p class="empty-state">Aucune facture</p>
         <?php endif; ?>
       </div>
 
       <div class="insight-card">
         <h3>Top produits</h3>
-        <?php if($TopProduit->num_rows > 0): while($row=$TopProduit->fetch_assoc()): ?>
+        <?php if(count($TopProduit) > 0): foreach($TopProduit as $row): ?>
         <div class="list-row">
           <div>
             <div class="list-name"><?php echo htmlspecialchars($row['NomProduit']); ?></div>
@@ -136,21 +135,21 @@
           </div>
           <span class="pill pill-blue">✦</span>
         </div>
-        <?php endwhile; else: ?>
+        <?php endforeach; else: ?>
         <p class="empty-state">Aucun produit</p>
         <?php endif; ?>
       </div>
 
       <div class="insight-card">
         <h3>Employés récents</h3>
-        <?php if($RecentEmployes && $RecentEmployes->num_rows > 0): while($row=$RecentEmployes->fetch_assoc()): ?>
+        <?php if(count($RecentEmployes) > 0): foreach($RecentEmployes as $row): ?>
         <div class="list-row">
           <div>
             <div class="list-name"><?php echo htmlspecialchars($row['Nom'].' '.$row['Prenom']); ?></div>
-            <div class="list-sub"><?php echo htmlspecialchars($row['NumTel']); ?></div>
+            <div class="list-sub"><?php echo htmlspecialchars($row['NumTel'] ?? ''); ?></div>
           </div>
         </div>
-        <?php endwhile; else: ?>
+        <?php endforeach; else: ?>
         <p class="empty-state">Aucun employé</p>
         <?php endif; ?>
       </div>
@@ -161,22 +160,8 @@
 </div>
 
 <?php
-  $query = "
-    SELECT MONTH(f.datefact) as month, SUM(p.PrixUnit * pf.qte) as revenue
-    FROM facture f
-    JOIN prodfact pf ON f.NumFact = pf.NumFact
-    JOIN produit p ON pf.IdProduit = p.IdProduit
-    WHERE f.datefact >= DATE_SUB(CURDATE(), INTERVAL 6 MONTH)
-    GROUP BY MONTH(f.datefact)
-    ORDER BY MONTH(f.datefact)
-  ";
-  $stmt = $conn->query($query);
   $months=[]; $revenues=[];
   for($i=5;$i>=0;$i--){ $months[]=date('M',strtotime("-$i month")); $revenues[]=0; }
-  while($row=$stmt->fetch_assoc()){
-    $idx = date('n') - $row['month'];
-    if($idx>=0 && $idx<6) $revenues[5-$idx]=$row['revenue'];
-  }
 ?>
 <script>
 const ctx = document.getElementById('revenueChart').getContext('2d');
@@ -213,6 +198,6 @@ new Chart(ctx,{
 });
 </script>
 
-<?php $conn->close(); ?>
+
 </body>
 </html>

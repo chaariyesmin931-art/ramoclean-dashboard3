@@ -9,28 +9,35 @@
 </head>
 <body>
 <?php
-  $conn = new mysqli("localhost","root","","ramoclean");
-  if($conn->connect_error) die("Connection failed: ".$conn->connect_error);
+  require_once("connexion.php");
+  
+  $collection = $db->employeur;
 
   if(isset($_GET['delete'])){
-    $cin = mysqli_real_escape_string($conn, $_GET['delete']);
-    $conn->query("DELETE FROM employeur WHERE Cin='$cin'");
+    $cin = trim($_GET['delete']);
+    $collection->deleteOne(['Cin' => $cin]);
     header("Location: employe.php"); exit();
   }
 
   $search = "";
+  $filter = [];
   if(isset($_GET['searche']) && $_GET['searche'] != ""){
-    $search = mysqli_real_escape_string($conn, $_GET['searche']);
-    $sqlEmployes = "SELECT * FROM employeur WHERE Nom LIKE '%$search%' OR Prenom LIKE '%$search%' OR Cin LIKE '%$search%' OR NumTel LIKE '%$search%' ORDER BY Nom";
-  } else {
-    $sqlEmployes = "SELECT * FROM employeur ORDER BY Nom";
+    $search = trim($_GET['searche']);
+    $filter = [
+        '$or' => [
+            ['Nom' => new MongoDB\BSON\Regex($search, 'i')],
+            ['Prenom' => new MongoDB\BSON\Regex($search, 'i')],
+            ['Cin' => new MongoDB\BSON\Regex($search, 'i')],
+            ['NumTel' => new MongoDB\BSON\Regex($search, 'i')]
+        ]
+    ];
   }
-  $resultEmployes = $conn->query($sqlEmployes);
+  
+  $options = ['sort' => ['Nom' => 1]];
+  $resultEmployes = $collection->find($filter, $options)->toArray();
 
-  $totalRes = $conn->query("SELECT COUNT(*) as total FROM employeur");
-  $totalEmployes = $totalRes->fetch_assoc()['total'];
+  $totalEmployes = $collection->countDocuments();
 ?>
-<?php require("insights.php"); ?>
 
 <nav>
   <div class="nav-logo-area">
@@ -83,24 +90,24 @@
   </div>
 
   <div class="data-grid">
-    <?php if($resultEmployes->num_rows > 0): while($row=$resultEmployes->fetch_assoc()): ?>
+    <?php if(count($resultEmployes) > 0): foreach($resultEmployes as $row): ?>
     <div class="data-card">
-      <h2><?php echo htmlspecialchars($row['Nom'].' '.$row['Prenom']); ?></h2>
-      <h4>CIN: <?php echo htmlspecialchars($row['Cin']); ?></h4>
-      <h4>📞 <?php echo htmlspecialchars($row['NumTel']); ?></h4>
+      <h2><?php echo htmlspecialchars(($row['Nom'] ?? '') . ' ' . ($row['Prenom'] ?? '')); ?></h2>
+      <h4>CIN: <?php echo htmlspecialchars($row['Cin'] ?? ''); ?></h4>
+      <h4>📞 <?php echo htmlspecialchars($row['NumTel'] ?? ''); ?></h4>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
-        <a href="details_employe.php?id=<?php echo urlencode($row['Cin']); ?>" class="details-btn">Détails</a>
-        <a href="employe.php?delete=<?php echo urlencode($row['Cin']); ?>"
+        <a href="details_employe.php?id=<?php echo urlencode($row['Cin'] ?? ''); ?>" class="details-btn">Détails</a>
+        <a href="employe.php?delete=<?php echo urlencode($row['Cin'] ?? ''); ?>"
            class="delete-btn"
            onclick="return confirm('Supprimer cet employé ?')">Supprimer</a>
       </div>
     </div>
-    <?php endwhile; else: ?>
+    <?php endforeach; else: ?>
     <div class="empty-state">Aucun employé trouvé.</div>
     <?php endif; ?>
   </div>
 
 </div>
-<?php $conn->close(); ?>
+
 </body>
 </html>

@@ -3,37 +3,35 @@
 header("Content-Type: application/vnd.ms-excel");
 header("Content-Disposition: attachment; filename=fournisseurs.xls");
 
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
-$sql = "
-SELECT
-    f.Mat AS 'Matricule Fiscale',
-    CONCAT(COALESCE(f.Nom,''), ' ', COALESCE(f.Prenom,'')) AS 'Nom Complet',
-    f.NomEntreprise AS 'Entreprise',
-    f.Email,
-    f.NumTel AS 'Téléphone',
-    COUNT(DISTINCT sm.idsm) AS 'Entrées Stock',
-    COALESCE(SUM(sm.qte), 0) AS 'Stock Total (toutes matières)'
-FROM fournisseur f
-LEFT JOIN stock_matiere sm ON f.Mat = sm.Mat
-GROUP BY f.Mat
-ORDER BY f.NomEntreprise
-";
+$fournisseurCollection = $db->fournisseur;
+$stockMatiereCollection = $db->stock_matiere;
 
-$result = $conn->query($sql);
+$cursor = $fournisseurCollection->find([], ['sort' => ['NomEntreprise' => 1]]);
 
 echo "Matricule Fiscale\tNom Complet\tEntreprise\tEmail\tTéléphone\tEntrées Stock\tStock Total\n";
 
-while ($row = $result->fetch_assoc()) {
-    echo $row['Matricule Fiscale'] . "\t" .
-         trim($row['Nom Complet'])  . "\t" .
-         $row['Entreprise']         . "\t" .
-         $row['Email']              . "\t" .
-         $row['Téléphone']          . "\t" .
-         $row['Entrées Stock']      . "\t" .
-         $row['Stock Total (toutes matières)'] . "\n";
+foreach ($cursor as $row) {
+    $rowArray = (array) $row;
+    $mat = $rowArray['Mat'] ?? '';
+    
+    $stockDocs = $stockMatiereCollection->find(['Mat' => $mat]);
+    $entrees = 0;
+    $totalStock = 0;
+    foreach ($stockDocs as $sd) {
+        $entrees++;
+        $totalStock += $sd['qte'] ?? 0;
+    }
+    
+    $nomComplet = trim(($rowArray['Nom'] ?? '') . ' ' . ($rowArray['Prenom'] ?? ''));
+    
+    echo $mat . "\t" .
+         $nomComplet  . "\t" .
+         ($rowArray['NomEntreprise'] ?? '') . "\t" .
+         ($rowArray['Email'] ?? '')         . "\t" .
+         ($rowArray['NumTel'] ?? '')        . "\t" .
+         $entrees                           . "\t" .
+         $totalStock                        . "\n";
 }
-
-$conn->close();
 ?>

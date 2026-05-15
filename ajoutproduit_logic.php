@@ -1,12 +1,17 @@
 <?php require_once("auth.php"); ?>
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success = "";
 $error   = "";
 
 $allowed_types = ['kg', 'lit'];
+
+$produitCollection = $db->produit;
+$familleCollection = $db->famille;
+$prodmatCollection = $db->prodmat;
+$matiereCollection = $db->matiere;
+$familleMatCollection = $db->famille_mat;
 
 /* =============================================
    HANDLE NEW PRODUCT CREATION
@@ -14,7 +19,7 @@ $allowed_types = ['kg', 'lit'];
 if (isset($_POST['create_produit'])) {
     $idProd = intval($_POST['IdProduit']);
     $idFam  = intval($_POST['IdFamille']);
-    $nom    = mysqli_real_escape_string($conn, trim($_POST['NomProduit']));
+    $nom    = trim($_POST['NomProduit']);
     $poid   = floatval($_POST['poid']);
     $prix   = floatval($_POST['PrixUnit']);
 
@@ -35,22 +40,30 @@ if (isset($_POST['create_produit'])) {
     } elseif (empty($ingredients)) {
         $error = "La recette ne peut pas être vide.";
     } else {
-        $check = $conn->query("SELECT IdProduit FROM produit WHERE IdProduit=$idProd");
-        if ($check->num_rows > 0) {
+        $check = $produitCollection->countDocuments(['IdProduit' => $idProd]);
+        if ($check > 0) {
             $error = "Un produit avec cet ID existe déjà.";
         } else {
-            $conn->begin_transaction();
             try {
-                $conn->query("INSERT INTO produit (IdProduit, IdFamille, NomProduit, poid, PrixUnit)
-                              VALUES ($idProd, $idFam, '$nom', $poid, $prix)");
+                $produitCollection->insertOne([
+                    'IdProduit' => $idProd,
+                    'IdFamille' => $idFam,
+                    'NomProduit' => $nom,
+                    'poid' => $poid,
+                    'PrixUnit' => $prix
+                ]);
                 foreach ($ingredients as $ing) {
-                    $conn->query("INSERT INTO prodmat (IdProduit, IdMatiere, qte)
-                                  VALUES ($idProd, {$ing['id']}, {$ing['qte']})");
+                    $prodmatCollection->insertOne([
+                        'IdProduit' => $idProd,
+                        'IdMatiere' => $ing['id'],
+                        'qte' => $ing['qte']
+                    ]);
                 }
-                $conn->commit();
                 $success = "Produit « $nom » créé avec succès avec " . count($ingredients) . " ingrédient(s) !";
             } catch (Exception $e) {
-                $conn->rollback();
+                // simple manual rollback
+                $produitCollection->deleteOne(['IdProduit' => $idProd]);
+                $prodmatCollection->deleteMany(['IdProduit' => $idProd]);
                 $error = "Erreur lors de la création : " . $e->getMessage();
             }
         }
@@ -62,9 +75,9 @@ if (isset($_POST['create_produit'])) {
    ============================================= */
 if (isset($_POST['create_famille'])) {
     $idFam  = intval($_POST['new_IdFamille']);
-    $nomFam = mysqli_real_escape_string($conn, trim($_POST['new_NomFamille']));
-    $typee  = mysqli_real_escape_string($conn, trim($_POST['new_typee']));
-    $arome  = mysqli_real_escape_string($conn, trim($_POST['new_arome']));
+    $nomFam = trim($_POST['new_NomFamille']);
+    $typee  = trim($_POST['new_typee']);
+    $arome  = trim($_POST['new_arome']);
     $tva    = intval($_POST['new_tva']);
 
     if ($idFam <= 0 || $nomFam === "") {
@@ -72,18 +85,21 @@ if (isset($_POST['create_famille'])) {
     } elseif (!in_array($typee, $allowed_types)) {
         $error = "Type invalide. Valeurs acceptées : " . implode(', ', $allowed_types) . ".";
     } else {
-        $check = $conn->query("SELECT IdFamille FROM famille WHERE IdFamille=$idFam");
-        if ($check->num_rows > 0) {
+        $check = $familleCollection->countDocuments(['IdFamille' => $idFam]);
+        if ($check > 0) {
             $error = "Une catégorie avec cet ID existe déjà.";
         } else {
-            $sql = "INSERT INTO famille (IdFamille, NomFamille, typee, arome, tva)
-                    VALUES ($idFam, '$nomFam', '$typee', '$arome', $tva)";
-            if ($conn->query($sql)) {
+            try {
+                $familleCollection->insertOne([
+                    'IdFamille' => $idFam,
+                    'NomFamille' => $nomFam,
+                    'typee' => $typee,
+                    'arome' => $arome,
+                    'tva' => $tva
+                ]);
                 $success = "Catégorie « $nomFam » créée ! Vous pouvez maintenant la sélectionner.";
-            } else {
-                $error = strpos($conn->error, 'chk_type') !== false
-                    ? "Type refusé. Valeurs autorisées : " . implode(', ', $allowed_types) . "."
-                    : "Erreur : " . $conn->error;
+            } catch (Exception $e) {
+                $error = "Erreur : " . $e->getMessage();
             }
         }
     }
@@ -93,27 +109,23 @@ if (isset($_POST['create_famille'])) {
    LOAD DATA FOR FORM
    ============================================= */
 $familles = [];
-$resFam = $conn->query("SELECT * FROM famille ORDER BY NomFamille");
-while ($f = $resFam->fetch_assoc()) $familles[] = $f;
+$resFam = $familleCollection->find([], ['sort' => ['NomFamille' => 1]]);
+foreach ($resFam as $f) $familles[] = (array) $f;
 
 $allMatieres = [];
-$resMat = $conn->query("SELECT IdMatiere, NomMat, typee FROM matiere ORDER BY NomMat");
-while ($m = $resMat->fetch_assoc()) $allMatieres[] = $m;
+$resMat = $matiereCollection->find([], ['sort' => ['NomMat' => 1]]);
+foreach ($resMat as $m) $allMatieres[] = (array) $m;
 
 /* Load famille_mat base recipes for JS auto-calculation */
 $familleRecipes = [];
-$resRec = $conn->query("
-    SELECT famille_mat.IdFamille, famille_mat.IdMatiere,
-           famille_mat.qte_per_unit, matiere.NomMat, matiere.typee AS mat_type
-    FROM famille_mat
-    JOIN matiere ON famille_mat.IdMatiere = matiere.IdMatiere
-    ORDER BY famille_mat.IdFamille
-");
-if ($resRec) {
-    while ($r = $resRec->fetch_assoc()) {
-        $familleRecipes[$r['IdFamille']][] = $r;
+$resRec = $familleMatCollection->find([], ['sort' => ['IdFamille' => 1]]);
+foreach ($resRec as $r) {
+    $rArray = (array) $r;
+    $mat = $matiereCollection->findOne(['IdMatiere' => $rArray['IdMatiere']]);
+    if ($mat) {
+        $rArray['NomMat'] = $mat['NomMat'];
+        $rArray['mat_type'] = $mat['typee'];
     }
+    $familleRecipes[$rArray['IdFamille']][] = $rArray;
 }
-
-$conn->close();
 ?>

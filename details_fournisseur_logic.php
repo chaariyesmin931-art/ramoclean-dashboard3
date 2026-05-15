@@ -1,23 +1,24 @@
 <?php require_once("auth.php"); ?>
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success = "";
 $error   = "";
 
-$id = isset($_GET['id']) ? mysqli_real_escape_string($conn, $_GET['id']) : '';
+$id = isset($_GET['id']) ? trim($_GET['id']) : '';
 if ($id === '') { header("Location: fournisseur.php"); exit(); }
+
+$collection = $db->fournisseur;
 
 /* =============================================
    HANDLE UPDATE
    ============================================= */
 if (isset($_POST['update_fournisseur'])) {
-    $nom        = mysqli_real_escape_string($conn, trim($_POST['Nom']));
-    $prenom     = mysqli_real_escape_string($conn, trim($_POST['Prenom']));
-    $entreprise = mysqli_real_escape_string($conn, trim($_POST['NomEntreprise']));
-    $email      = mysqli_real_escape_string($conn, trim($_POST['Email']));
-    $tel        = mysqli_real_escape_string($conn, trim($_POST['NumTel']));
+    $nom        = trim($_POST['Nom']);
+    $prenom     = trim($_POST['Prenom']);
+    $entreprise = trim($_POST['NomEntreprise']);
+    $email      = trim($_POST['Email']);
+    $tel        = trim($_POST['NumTel']);
 
     if ($entreprise === "" || $email === "" || $tel === "") {
         $error = "L'entreprise, l'email et le téléphone sont obligatoires.";
@@ -26,15 +27,25 @@ if (isset($_POST['update_fournisseur'])) {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "L'adresse email n'est pas valide.";
     } else {
-        $checkTel = $conn->query("SELECT NumTel FROM fournisseur WHERE NumTel='$tel' AND Mat!='$id'");
-        if ($checkTel->num_rows > 0) {
+        $checkTel = $collection->countDocuments(['NumTel' => $tel, 'Mat' => ['$ne' => $id]]);
+        if ($checkTel > 0) {
             $error = "Ce numéro de téléphone est déjà utilisé par un autre fournisseur.";
         } else {
-            $sql = "UPDATE fournisseur SET Nom='$nom', Prenom='$prenom',
-                    NomEntreprise='$entreprise', Email='$email', NumTel='$tel'
-                    WHERE Mat='$id'";
-            if ($conn->query($sql)) $success = "Fournisseur mis à jour avec succès.";
-            else $error = "Erreur : " . $conn->error;
+            try {
+                $collection->updateOne(
+                    ['Mat' => $id],
+                    ['$set' => [
+                        'Nom' => $nom,
+                        'Prenom' => $prenom,
+                        'NomEntreprise' => $entreprise,
+                        'Email' => $email,
+                        'NumTel' => $tel
+                    ]]
+                );
+                $success = "Fournisseur mis à jour avec succès.";
+            } catch (Exception $e) {
+                $error = "Erreur : " . $e->getMessage();
+            }
         }
     }
 }
@@ -43,32 +54,35 @@ if (isset($_POST['update_fournisseur'])) {
    HANDLE DELETE
    ============================================= */
 if (isset($_POST['delete_fournisseur'])) {
-    if ($conn->query("DELETE FROM fournisseur WHERE Mat='$id'")) {
+    try {
+        $collection->deleteOne(['Mat' => $id]);
         header("Location: fournisseur.php?success=Fournisseur+supprimé");
         exit();
-    } else {
-        $error = "Erreur lors de la suppression : " . $conn->error;
+    } catch (Exception $e) {
+        $error = "Erreur lors de la suppression : " . $e->getMessage();
     }
 }
 
 /* =============================================
    LOAD FOURNISSEUR + STOCK MATIERES
    ============================================= */
-$res = $conn->query("SELECT * FROM fournisseur WHERE Mat='$id'");
-if ($res->num_rows === 0) { header("Location: fournisseur.php"); exit(); }
-$fournisseur = $res->fetch_assoc();
+$fournisseur = $collection->findOne(['Mat' => $id]);
+if (!$fournisseur) { header("Location: fournisseur.php"); exit(); }
+$fournisseur = (array) $fournisseur;
 
 /* Matieres supplied by this fournisseur (via stock_matiere) */
-$resMatieres = $conn->query("
-    SELECT stock_matiere.idsm, stock_matiere.qte,
-           matiere.NomMat, matiere.typee
-    FROM stock_matiere
-    JOIN matiere ON stock_matiere.IdMatiere = matiere.IdMatiere
-    WHERE stock_matiere.Mat = '$id'
-    ORDER BY matiere.NomMat
-");
+$resMatieres = $db->stock_matiere->find(['Mat' => $id]);
 $matieres = [];
-while ($m = $resMatieres->fetch_assoc()) $matieres[] = $m;
-
-$conn->close();
+foreach ($resMatieres as $sm) {
+    $smArray = (array) $sm;
+    $matiereInfo = $db->matiere->findOne(['IdMatiere' => $smArray['IdMatiere'] ?? null]);
+    if ($matiereInfo) {
+        $smArray['NomMat'] = $matiereInfo['NomMat'];
+        $smArray['typee'] = $matiereInfo['typee'];
+    } else {
+        $smArray['NomMat'] = 'Inconnu';
+        $smArray['typee'] = '';
+    }
+    $matieres[] = $smArray;
+}
 ?>

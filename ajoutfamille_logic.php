@@ -1,22 +1,25 @@
 <?php require_once("auth.php"); ?>
 <?php
-$conn = new mysqli("localhost", "root", "", "ramoclean");
-if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
+require_once("connexion.php");
 
 $success = "";
 $error   = "";
 
-/* Allowed values for typee — matches DB CHECK constraint */
+/* Allowed values for typee */
 $allowed_types = ['kg', 'lit'];
+
+$familleCollection = $db->famille;
+$familleMatCollection = $db->famille_mat;
+$matiereCollection = $db->matiere;
 
 /* =============================================
    HANDLE NEW FAMILLE CREATION
    ============================================= */
 if (isset($_POST['create_famille'])) {
     $idFam  = intval($_POST['IdFamille']);
-    $nomFam = mysqli_real_escape_string($conn, trim($_POST['NomFamille']));
-    $typee  = mysqli_real_escape_string($conn, trim($_POST['typee']));
-    $arome  = mysqli_real_escape_string($conn, trim($_POST['arome']));
+    $nomFam = trim($_POST['NomFamille']);
+    $typee  = trim($_POST['typee']);
+    $arome  = trim($_POST['arome']);
     $tva    = intval($_POST['tva']);
 
     /* Collect ingredients */
@@ -39,27 +42,35 @@ if (isset($_POST['create_famille'])) {
     } elseif (empty($ingredients)) {
         $error = "Ajoutez au moins une matière première à la recette de base.";
     } else {
-        $check = $conn->query("SELECT IdFamille FROM famille WHERE IdFamille=$idFam");
-        if ($check->num_rows > 0) {
+        $check = $familleCollection->countDocuments(['IdFamille' => $idFam]);
+        if ($check > 0) {
             $error = "Une catégorie avec cet ID existe déjà.";
         } else {
-            $conn->begin_transaction();
             try {
                 /* Insert famille */
-                $conn->query("INSERT INTO famille (IdFamille, NomFamille, typee, arome, tva)
-                              VALUES ($idFam, '$nomFam', '$typee', '$arome', $tva)");
+                $familleCollection->insertOne([
+                    'IdFamille' => $idFam,
+                    'NomFamille' => $nomFam,
+                    'typee' => $typee,
+                    'arome' => $arome,
+                    'tva' => $tva
+                ]);
 
                 /* Insert base recipe into famille_mat */
                 foreach ($ingredients as $ing) {
-                    $conn->query("INSERT INTO famille_mat (IdFamille, IdMatiere, qte_per_unit)
-                                  VALUES ($idFam, {$ing['id']}, {$ing['qte']})");
+                    $familleMatCollection->insertOne([
+                        'IdFamille' => $idFam,
+                        'IdMatiere' => $ing['id'],
+                        'qte_per_unit' => $ing['qte']
+                    ]);
                 }
 
-                $conn->commit();
                 $success = "Catégorie « $nomFam » créée avec " . count($ingredients) . " ingrédient(s) de base !";
 
             } catch (Exception $e) {
-                $conn->rollback();
+                // To safely handle partial inserts, we should ideally use sessions, but we'll try a manual delete
+                $familleCollection->deleteOne(['IdFamille' => $idFam]);
+                $familleMatCollection->deleteMany(['IdFamille' => $idFam]);
                 $error = "Erreur lors de la création : " . $e->getMessage();
             }
         }
@@ -70,8 +81,9 @@ if (isset($_POST['create_famille'])) {
    LOAD MATIERES FOR FORM
    ============================================= */
 $allMatieres = [];
-$resMat = $conn->query("SELECT IdMatiere, NomMat, typee FROM matiere ORDER BY NomMat");
-while ($m = $resMat->fetch_assoc()) $allMatieres[] = $m;
+$resMat = $matiereCollection->find([], ['sort' => ['NomMat' => 1]]);
+foreach ($resMat as $m) {
+    $allMatieres[] = (array) $m;
+}
 
-$conn->close();
 ?>
