@@ -1,6 +1,7 @@
 <?php require_once("auth.php"); ?>
 <?php
-require_once("connexion.php");
+$conn = new mysqli("localhost", "root", "", "ramoclean");
+if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
 $success = "";
 $error   = "";
@@ -9,12 +10,12 @@ $error   = "";
    HANDLE NEW FOURNISSEUR CREATION
    ============================================= */
 if (isset($_POST['create_fournisseur'])) {
-    $mat        = trim($_POST['Mat']);
-    $nom        = trim($_POST['Nom']);
-    $prenom     = trim($_POST['Prenom']);
-    $entreprise = trim($_POST['NomEntreprise']);
-    $email      = trim($_POST['Email']);
-    $tel        = trim($_POST['NumTel']);
+    $mat        = mysqli_real_escape_string($conn, trim($_POST['Mat']));
+    $nom        = mysqli_real_escape_string($conn, trim($_POST['Nom']));
+    $prenom     = mysqli_real_escape_string($conn, trim($_POST['Prenom']));
+    $entreprise = mysqli_real_escape_string($conn, trim($_POST['NomEntreprise']));
+    $email      = mysqli_real_escape_string($conn, trim($_POST['Email']));
+    $tel        = mysqli_real_escape_string($conn, trim($_POST['NumTel']));
 
     /* Validation */
     if ($mat === "" || $entreprise === "" || $email === "" || $tel === "") {
@@ -24,29 +25,25 @@ if (isset($_POST['create_fournisseur'])) {
     } elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
         $error = "L'adresse email n'est pas valide.";
     } else {
-        if (mongoExists($fournisseurs, 'Mat', $mat)) {
+        $checkMat = $conn->query("SELECT Mat FROM fournisseur WHERE Mat='$mat'");
+        if ($checkMat->num_rows > 0) {
             $error = "Un fournisseur avec ce matricule existe déjà.";
         } else {
-            if (mongoExists($fournisseurs, 'NumTel', $tel)) {
+            $checkTel = $conn->query("SELECT NumTel FROM fournisseur WHERE NumTel='$tel'");
+            if ($checkTel->num_rows > 0) {
                 $error = "Ce numéro de téléphone est déjà utilisé par un autre fournisseur.";
             } else {
-                try {
-                    $fournisseurDoc = [
-                        'Mat' => $mat,
-                        'Nom' => $nom,
-                        'Prenom' => $prenom,
-                        'NomEntreprise' => $entreprise,
-                        'Email' => $email,
-                        'NumTel' => $tel,
-                        'created_at' => new MongoDB\BSON\UTCDateTime()
-                    ];
-                    mongoInsert($fournisseurs, $fournisseurDoc);
+                $sql = "INSERT INTO fournisseur (Mat, Nom, Prenom, NomEntreprise, Email, NumTel)
+                        VALUES ('$mat', '$nom', '$prenom', '$entreprise', '$email', '$tel')";
+                if ($conn->query($sql)) {
                     $success = "Fournisseur « $entreprise » créé avec succès !";
-                } catch (Exception $e) {
-                    $error = "Erreur lors de la création : " . $e->getMessage();
+                } else {
+                    $error = "Erreur lors de la création : " . $conn->error;
                 }
             }
         }
     }
 }
+
+$conn->close();
 ?>

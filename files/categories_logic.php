@@ -1,6 +1,7 @@
 <?php require_once("auth.php"); ?>
 <?php
-require_once("connexion.php");
+$conn = new mysqli("localhost", "root", "", "ramoclean");
+if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
 $success = "";
 $error   = "";
@@ -11,18 +12,11 @@ $allowed_types = ['kg', 'lit'];
    ============================================= */
 if (isset($_GET['delete'])) {
     $delId = intval($_GET['delete']);
-    try {
-        /* Check if any products use this category */
-        $check = $produits->countDocuments(['IdFamille' => $delId]);
-        if ($check > 0) {
-            $error = "Impossible de supprimer : des produits utilisent cette catégorie.";
-        } else {
-            mongoDelete($familles, ['IdFamille' => $delId]);
-            header("Location: categories.php?success=Catégorie+supprimée");
-            exit();
-        }
-    } catch (Exception $e) {
-        $error = "Erreur lors de la suppression : " . $e->getMessage();
+    if ($conn->query("DELETE FROM famille WHERE IdFamille=$delId")) {
+        header("Location: categories.php?success=Catégorie+supprimée");
+        exit();
+    } else {
+        $error = "Impossible de supprimer : des produits utilisent cette catégorie.";
     }
 }
 
@@ -31,9 +25,9 @@ if (isset($_GET['delete'])) {
    ============================================= */
 if (isset($_POST['update_famille'])) {
     $editId  = intval($_POST['IdFamille']);
-    $nom     = trim($_POST['NomFamille']);
-    $typee   = trim($_POST['typee']);
-    $arome   = trim($_POST['arome']);
+    $nom     = mysqli_real_escape_string($conn, trim($_POST['NomFamille']));
+    $typee   = mysqli_real_escape_string($conn, trim($_POST['typee']));
+    $arome   = mysqli_real_escape_string($conn, trim($_POST['arome']));
     $tva     = intval($_POST['tva']);
 
     if ($nom === "") {
@@ -41,23 +35,15 @@ if (isset($_POST['update_famille'])) {
     } elseif (!in_array($typee, $allowed_types)) {
         $error = "Type invalide. Valeurs acceptées : " . implode(', ', $allowed_types) . ".";
     } else {
-        try {
-            $updateData = [
-                'NomFamille' => $nom,
-                'typee' => $typee,
-                'arome' => $arome,
-                'tva' => $tva
-            ];
-            mongoUpdate($familles, ['IdFamille' => $editId], $updateData);
-            $success = "Catégorie mise à jour avec succès.";
-        } catch (Exception $e) {
-            $error = "Erreur : " . $e->getMessage();
-        }
+        $sql = "UPDATE famille SET NomFamille='$nom', typee='$typee', arome='$arome', tva=$tva
+                WHERE IdFamille=$editId";
+        if ($conn->query($sql)) $success = "Catégorie mise à jour avec succès.";
+        else $error = "Erreur : " . $conn->error;
     }
 }
-
+ 
 /* =============================================
-   HANDLE ADD MATIERE TO RECIPE (base_recipes)
+   HANDLE ADD MATIERE TO RECIPE (famille_mat)
    ============================================= */
 if (isset($_POST['add_recipe_mat'])) {
     $famId  = intval($_POST['recipe_IdFamille']);
@@ -67,35 +53,14 @@ if (isset($_POST['add_recipe_mat'])) {
     if ($matId <= 0 || $qte <= 0) {
         $error = "Veuillez choisir une matière et une quantité valide.";
     } else {
-        try {
-            $famille = mongoFindOne($familles, ['IdFamille' => $famId]);
-            if (!$famille) {
-                $error = "Catégorie non trouvée.";
-            } else {
-                /* Check if matière already in recipe */
-                $recipes = $famille['base_recipes'] ?? [];
-                $found = false;
-                foreach ($recipes as &$recipe) {
-                    if ($recipe['IdMatiere'] == $matId) {
-                        $recipe['qte_per_unit'] = $qte;
-                        $found = true;
-                        break;
-                    }
-                }
-                
-                if (!$found) {
-                    $recipes[] = [
-                        'IdMatiere' => $matId,
-                        'qte_per_unit' => $qte
-                    ];
-                }
-                
-                mongoUpdate($familles, ['IdFamille' => $famId], ['base_recipes' => $recipes]);
-                $success = "Recette mise à jour.";
-            }
-        } catch (Exception $e) {
-            $error = "Erreur : " . $e->getMessage();
+        /* Upsert */
+        $check = $conn->query("SELECT * FROM famille_mat WHERE IdFamille=$famId AND IdMatiere=$matId");
+        if ($check->num_rows > 0) {
+            $conn->query("UPDATE famille_mat SET qte_per_unit=$qte WHERE IdFamille=$famId AND IdMatiere=$matId");
+        } else {
+            $conn->query("INSERT INTO famille_mat (IdFamille, IdMatiere, qte_per_unit) VALUES ($famId, $matId, $qte)");
         }
+        $success = "Recette mise à jour.";
     }
 }
 
@@ -105,82 +70,44 @@ if (isset($_POST['add_recipe_mat'])) {
 if (isset($_GET['remove_mat'])) {
     $famId = intval($_GET['fam']);
     $matId = intval($_GET['remove_mat']);
-    try {
-        $famille = mongoFindOne($familles, ['IdFamille' => $famId]);
-        if ($famille && isset($famille['base_recipes'])) {
-            $recipes = array_filter($famille['base_recipes'], function($r) use ($matId) {
-                return $r['IdMatiere'] != $matId;
-            });
-            mongoUpdate($familles, ['IdFamille' => $famId], ['base_recipes' => array_values($recipes)]);
-        }
-        header("Location: categories.php?success=Ingrédient+supprimé+de+la+recette#cat-$famId");
-        exit();
-    } catch (Exception $e) {
-        $error = "Erreur : " . $e->getMessage();
-    }
+    $conn->query("DELETE FROM famille_mat WHERE IdFamille=$famId AND IdMatiere=$matId");
+    header("Location: categories.php?success=Ingrédient+supprimé+de+la+recette#cat-$famId");
+    exit();
 }
 
 /* =============================================
    LOAD ALL CATEGORIES WITH RECIPE
    ============================================= */
+$resCategories = $conn->query("
+    SELECT famille.*,
+           COUNT(DISTINCT produit.IdProduit) AS nb_produits
+    FROM famille
+    LEFT JOIN produit ON famille.IdFamille = produit.IdFamille
+    GROUP BY famille.IdFamille
+    ORDER BY famille.NomFamille
+");
 $categories = [];
-try {
-    /* Use aggregation to get product count */
-    $pipeline = [
-        [
-            '$lookup' => [
-                'from' => 'produits',
-                'localField' => 'IdFamille',
-                'foreignField' => 'IdFamille',
-                'as' => 'products'
-            ]
-        ],
-        [
-            '$project' => [
-                'IdFamille' => 1,
-                'NomFamille' => 1,
-                'typee' => 1,
-                'arome' => 1,
-                'tva' => 1,
-                'base_recipes' => 1,
-                'nb_produits' => ['$size' => '$products']
-            ]
-        ],
-        ['$sort' => ['NomFamille' => 1]]
-    ];
-    
-    $result = mongoAggregate($familles, $pipeline);
-    foreach ($result as $c) {
-        $categories[] = $c;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des catégories : " . $e->getMessage();
-}
+while ($c = $resCategories->fetch_assoc()) $categories[] = $c;
 
 /* Load recipes for all categories */
+$resRecipes = $conn->query("
+    SELECT famille_mat.IdFamille, famille_mat.IdMatiere,
+           famille_mat.qte_per_unit, matiere.NomMat, matiere.typee AS mat_type
+    FROM famille_mat
+    JOIN matiere ON famille_mat.IdMatiere = matiere.IdMatiere
+    ORDER BY famille_mat.IdFamille, matiere.NomMat
+");
 $recipes = [];
-try {
-    $famillesWithRecipes = mongoFindAll($familles, ['base_recipes' => ['$exists' => true]]);
-    foreach ($famillesWithRecipes as $fam) {
-        if (isset($fam['base_recipes'])) {
-            $recipes[$fam['IdFamille']] = $fam['base_recipes'];
-        }
-    }
-} catch (Exception $e) {
-    // Silently handle
+while ($r = $resRecipes->fetch_assoc()) {
+    $recipes[$r['IdFamille']][] = $r;
 }
 
 /* Load all matieres for recipe add form */
 $allMatieres = [];
-try {
-    $matieresResult = mongoFindAll($matieres, []);
-    foreach ($matieresResult as $m) {
-        $allMatieres[] = $m;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des matières : " . $e->getMessage();
-}
+$resMat = $conn->query("SELECT IdMatiere, NomMat, typee FROM matiere ORDER BY NomMat");
+while ($m = $resMat->fetch_assoc()) $allMatieres[] = $m;
 
 if (isset($_GET['success'])) $success = htmlspecialchars($_GET['success']);
-?>
 
+$conn->close();
+?>

@@ -1,31 +1,24 @@
 <?php
-require_once("connexion.php");
+$conn = new mysqli("localhost", "root", "", "ramoclean");
+if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
 $success  = "";
 $error    = "";
-$warning  = "";
-$shortages = [];
+$warning  = "";           /* stock shortage warning */
+$shortages = [];          /* list of shortage details */
 
 $allowed_types = ['fact', 'bdl', 'devis'];
-
-/* =============================================
-   HELPER: Get next facture number
-   ============================================= */
-function getNextFactureNumber($collection) {
-    $lastFact = mongoFindOne($collection, [], ['sort' => ['NumFact' => -1]]);
-    return $lastFact ? ($lastFact['NumFact'] + 1) : 1;
-}
 
 /* =============================================
    HANDLE CREATION
    ============================================= */
 if (isset($_POST['create_facture'])) {
-    $matfis  = trim($_POST['MatFis']);
-    $date    = trim($_POST['datefact']);
+    $matfis  = mysqli_real_escape_string($conn, trim($_POST['MatFis']));
+    $date    = mysqli_real_escape_string($conn, trim($_POST['datefact']));
     $type    = in_array($_POST['TypeFact'], $allowed_types) ? $_POST['TypeFact'] : 'fact';
-    $force   = isset($_POST['force_create']);
+    $force   = isset($_POST['force_create']); /* user confirmed despite shortage */
     $payment = 0;
-
+  
     $prod_ids  = isset($_POST['prod_id'])  ? $_POST['prod_id']  : [];
     $prod_qtes = isset($_POST['prod_qte']) ? $_POST['prod_qte'] : [];
 
@@ -47,8 +40,8 @@ if (isset($_POST['create_facture'])) {
     } elseif (empty($lignes)) {
         $error = "Ajoutez au moins un produit.";
     } else {
-        $checkClient = mongoFindOne($clients, ['MatFis' => $matfis]);
-        if (!$checkClient) {
+        $checkClient = $conn->query("SELECT MatFis FROM client WHERE MatFis='$matfis'");
+        if ($checkClient->num_rows === 0) {
             $error = "Client introuvable.";
         } else {
 
@@ -58,15 +51,17 @@ if (isset($_POST['create_facture'])) {
                     $pid = $l['id'];
                     $qteNeeded = $l['qte'];
 
-                    $prodDoc = mongoFindOne($produits, ['IdProduit' => $pid]);
-                    if (!$prodDoc) {
-                        $error = "Produit #$pid introuvable.";
-                        break;
-                    }
-
-                    $stockDoc = mongoFindOne($stock, ['IdProduit' => $pid]);
-                    $stockDispo = $stockDoc ? ($stockDoc['qte'] ?? 0) : 0;
-                    $nomProduit = $prodDoc['NomProduit'] ?? "Produit #$pid";
+                    $resStock = $conn->query("
+                        SELECT produit.NomProduit,
+                               COALESCE(SUM(stock_produit.qte), 0) AS stock_dispo
+                        FROM produit
+                        LEFT JOIN stock_produit ON produit.IdProduit = stock_produit.IdProduit
+                        WHERE produit.IdProduit = $pid
+                        GROUP BY produit.IdProduit
+                    ");
+                    $stockRow = $resStock->fetch_assoc();
+                    $stockDispo = intval($stockRow['stock_dispo'] ?? 0);
+                    $nomProduit = $stockRow['NomProduit'] ?? "Produit #$pid";
 
                     if ($stockDispo < $qteNeeded) {
                         $shortages[] = [
@@ -81,45 +76,54 @@ if (isset($_POST['create_facture'])) {
                 /* If shortages found — stop and show warning */
                 if (!empty($shortages)) {
                     $warning = "Stock insuffisant pour certains produits.";
+                    /* Don't proceed — let the view show the warning */
                     goto end_of_logic;
                 }
             }
 
             /* ---- Proceed with creation ---- */
+            $conn->begin_transaction();
             try {
-                $numFact = getNextFactureNumber($factures);
+                /* 1. Insert facture */
+                $conn->query("INSERT INTO facture (MatFis, TypeFact, datefact, payment)
+                              VALUES ('$matfis', '$type', '$date', $payment)");
+                $numFact = $conn->insert_id;
 
-                /* 1. Create facture document with embedded product lines */
-                $factureDoc = [
-                    'NumFact' => $numFact,
-                    'MatFis' => $matfis,
-                    'TypeFact' => $type,
-                    'datefact' => $date,
-                    'payment' => $payment,
-                    'lignes' => $lignes,
-                    'created_at' => new MongoDB\BSON\UTCDateTime()
-                ];
-                mongoInsert($factures, $factureDoc);
+                /* 2. Insert product lines */
+                foreach ($lignes as $l) {
+                    $conn->query("INSERT INTO prodfact (NumFact, IdProduit, qte)
+                                  VALUES ($numFact, {$l['id']}, {$l['qte']})");
+                }
 
-                /* 2. Deduct from stock (fact only) */
+                /* 3. Deduct from stock_produit (fact only) */
                 if ($type === 'fact') {
                     foreach ($lignes as $l) {
-                        $pid = $l['id'];
+                        $pid         = $l['id'];
                         $qteToRemove = $l['qte'];
 
-                        /* Decrement stock */
-                        $stockDoc = mongoFindOne($stock, ['IdProduit' => $pid]);
-                        if ($stockDoc) {
-                            $newQte = max(0, ($stockDoc['qte'] ?? 0) - $qteToRemove);
-                            mongoUpdate($stock, ['IdProduit' => $pid], ['qte' => $newQte]);
+                        $stockRows = $conn->query(
+                            "SELECT idsp, qte FROM stock_produit
+                             WHERE IdProduit = $pid ORDER BY idsp ASC"
+                        );
+                        while ($qteToRemove > 0 && $row = $stockRows->fetch_assoc()) {
+                            if ($row['qte'] <= $qteToRemove) {
+                                $conn->query("DELETE FROM stock_produit WHERE idsp = {$row['idsp']}");
+                                $qteToRemove -= $row['qte'];
+                            } else {
+                                $newQte = $row['qte'] - $qteToRemove;
+                                $conn->query("UPDATE stock_produit SET qte = $newQte WHERE idsp = {$row['idsp']}");
+                                $qteToRemove = 0;
+                            }
                         }
                     }
                 }
 
+                $conn->commit();
                 header("Location: print_facture.php?id=$numFact");
                 exit();
 
             } catch (Exception $e) {
+                $conn->rollback();
                 $error = "Erreur : " . $e->getMessage();
             }
         }
@@ -130,45 +134,26 @@ end_of_logic:
 
 /* Load clients */
 $allClients = [];
-try {
-    $clientsResult = mongoFindAll($clients, []);
-    foreach ($clientsResult as $c) {
-        $allClients[] = $c;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des clients : " . $e->getMessage();
-}
+$res = $conn->query("SELECT MatFis, NomEntreprise, Nom, Prenom, NumTel FROM client ORDER BY NomEntreprise");
+while ($c = $res->fetch_assoc()) $allClients[] = $c;
 
 /* Load produits with current stock */
 $allProduits = [];
-try {
-    $produitsResult = mongoFindAll($produits, []);
-    foreach ($produitsResult as $p) {
-        /* Get stock info */
-        $stockDoc = mongoFindOne($stock, ['IdProduit' => $p['IdProduit']]);
-        $stockQte = $stockDoc ? ($stockDoc['qte'] ?? 0) : 0;
-
-        /* Get famille info */
-        $familleDoc = mongoFindOne($familles, ['IdFamille' => $p['IdFamille']]);
-
-        $p['stock'] = $stockQte;
-        if ($familleDoc) {
-            $p['NomFamille'] = $familleDoc['NomFamille'] ?? '';
-            $p['typee'] = $familleDoc['typee'] ?? '';
-            $p['tva'] = $familleDoc['tva'] ?? 0;
-        }
-
-        $allProduits[] = $p;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des produits : " . $e->getMessage();
-}
+$res = $conn->query("
+    SELECT produit.IdProduit, produit.NomProduit, produit.PrixUnit,
+           produit.poid, famille.typee, famille.NomFamille, famille.tva,
+           COALESCE(SUM(stock_produit.qte), 0) AS stock
+    FROM produit
+    LEFT JOIN famille ON produit.IdFamille = famille.IdFamille
+    LEFT JOIN stock_produit ON produit.IdProduit = stock_produit.IdProduit
+    GROUP BY produit.IdProduit
+    ORDER BY produit.NomProduit
+");
+while ($p = $res->fetch_assoc()) $allProduits[] = $p;
 
 /* Next facture number */
-try {
-    $nextNum = getNextFactureNumber($factures);
-} catch (Exception $e) {
-    $nextNum = '—';
-}
+$resNext = $conn->query("SELECT AUTO_INCREMENT FROM information_schema.TABLES WHERE TABLE_SCHEMA='ramoclean' AND TABLE_NAME='facture'");
+$nextNum = $resNext ? ($resNext->fetch_assoc()['AUTO_INCREMENT'] ?? '—') : '—';
 
+$conn->close();
 ?>

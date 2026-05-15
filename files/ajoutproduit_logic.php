@@ -1,6 +1,7 @@
 <?php require_once("auth.php"); ?>
 <?php
-require_once("connexion.php");
+$conn = new mysqli("localhost", "root", "", "ramoclean");
+if ($conn->connect_error) die("Connection failed: " . $conn->connect_error);
 
 $success = "";
 $error   = "";
@@ -13,7 +14,7 @@ $allowed_types = ['kg', 'lit'];
 if (isset($_POST['create_produit'])) {
     $idProd = intval($_POST['IdProduit']);
     $idFam  = intval($_POST['IdFamille']);
-    $nom    = trim($_POST['NomProduit']);
+    $nom    = mysqli_real_escape_string($conn, trim($_POST['NomProduit']));
     $poid   = floatval($_POST['poid']);
     $prix   = floatval($_POST['PrixUnit']);
 
@@ -34,22 +35,22 @@ if (isset($_POST['create_produit'])) {
     } elseif (empty($ingredients)) {
         $error = "La recette ne peut pas être vide.";
     } else {
-        if (mongoExists($produits, 'IdProduit', $idProd)) {
+        $check = $conn->query("SELECT IdProduit FROM produit WHERE IdProduit=$idProd");
+        if ($check->num_rows > 0) {
             $error = "Un produit avec cet ID existe déjà.";
         } else {
+            $conn->begin_transaction();
             try {
-                $produitDoc = [
-                    'IdProduit' => $idProd,
-                    'IdFamille' => $idFam,
-                    'NomProduit' => $nom,
-                    'poid' => $poid,
-                    'PrixUnit' => $prix,
-                    'ingredients' => $ingredients,
-                    'created_at' => new MongoDB\BSON\UTCDateTime()
-                ];
-                mongoInsert($produits, $produitDoc);
+                $conn->query("INSERT INTO produit (IdProduit, IdFamille, NomProduit, poid, PrixUnit)
+                              VALUES ($idProd, $idFam, '$nom', $poid, $prix)");
+                foreach ($ingredients as $ing) {
+                    $conn->query("INSERT INTO prodmat (IdProduit, IdMatiere, qte)
+                                  VALUES ($idProd, {$ing['id']}, {$ing['qte']})");
+                }
+                $conn->commit();
                 $success = "Produit « $nom » créé avec succès avec " . count($ingredients) . " ingrédient(s) !";
             } catch (Exception $e) {
+                $conn->rollback();
                 $error = "Erreur lors de la création : " . $e->getMessage();
             }
         }
@@ -61,9 +62,9 @@ if (isset($_POST['create_produit'])) {
    ============================================= */
 if (isset($_POST['create_famille'])) {
     $idFam  = intval($_POST['new_IdFamille']);
-    $nomFam = trim($_POST['new_NomFamille']);
-    $typee  = trim($_POST['new_typee']);
-    $arome  = trim($_POST['new_arome']);
+    $nomFam = mysqli_real_escape_string($conn, trim($_POST['new_NomFamille']));
+    $typee  = mysqli_real_escape_string($conn, trim($_POST['new_typee']));
+    $arome  = mysqli_real_escape_string($conn, trim($_POST['new_arome']));
     $tva    = intval($_POST['new_tva']);
 
     if ($idFam <= 0 || $nomFam === "") {
@@ -71,22 +72,18 @@ if (isset($_POST['create_famille'])) {
     } elseif (!in_array($typee, $allowed_types)) {
         $error = "Type invalide. Valeurs acceptées : " . implode(', ', $allowed_types) . ".";
     } else {
-        if (mongoExists($familles, 'IdFamille', $idFam)) {
+        $check = $conn->query("SELECT IdFamille FROM famille WHERE IdFamille=$idFam");
+        if ($check->num_rows > 0) {
             $error = "Une catégorie avec cet ID existe déjà.";
         } else {
-            try {
-                $familleDoc = [
-                    'IdFamille' => $idFam,
-                    'NomFamille' => $nomFam,
-                    'typee' => $typee,
-                    'arome' => $arome,
-                    'tva' => $tva,
-                    'created_at' => new MongoDB\BSON\UTCDateTime()
-                ];
-                mongoInsert($familles, $familleDoc);
+            $sql = "INSERT INTO famille (IdFamille, NomFamille, typee, arome, tva)
+                    VALUES ($idFam, '$nomFam', '$typee', '$arome', $tva)";
+            if ($conn->query($sql)) {
                 $success = "Catégorie « $nomFam » créée ! Vous pouvez maintenant la sélectionner.";
-            } catch (Exception $e) {
-                $error = "Erreur : " . $e->getMessage();
+            } else {
+                $error = strpos($conn->error, 'chk_type') !== false
+                    ? "Type refusé. Valeurs autorisées : " . implode(', ', $allowed_types) . "."
+                    : "Erreur : " . $conn->error;
             }
         }
     }
@@ -95,40 +92,28 @@ if (isset($_POST['create_famille'])) {
 /* =============================================
    LOAD DATA FOR FORM
    ============================================= */
-$famillesList = [];
-try {
-    $famillesResult = mongoFindAll($familles, []);
-    foreach ($famillesResult as $f) {
-        $famillesList[] = $f;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des catégories : " . $e->getMessage();
-}
+$familles = [];
+$resFam = $conn->query("SELECT * FROM famille ORDER BY NomFamille");
+while ($f = $resFam->fetch_assoc()) $familles[] = $f;
 
 $allMatieres = [];
-try {
-    $matieresResult = mongoFindAll($matieres, []);
-    foreach ($matieresResult as $m) {
-        $allMatieres[] = $m;
-    }
-} catch (Exception $e) {
-    $error = "Erreur lors du chargement des matières : " . $e->getMessage();
-}
+$resMat = $conn->query("SELECT IdMatiere, NomMat, typee FROM matiere ORDER BY NomMat");
+while ($m = $resMat->fetch_assoc()) $allMatieres[] = $m;
 
 /* Load famille_mat base recipes for JS auto-calculation */
 $familleRecipes = [];
-try {
-    $famillesRecipesResult = mongoFindAll($familles, ['base_recipes' => ['$exists' => true]]);
-    foreach ($famillesRecipesResult as $f) {
-        if (isset($f['base_recipes'])) {
-            $familleRecipes[$f['IdFamille']] = $f['base_recipes'];
-        }
+$resRec = $conn->query("
+    SELECT famille_mat.IdFamille, famille_mat.IdMatiere,
+           famille_mat.qte_per_unit, matiere.NomMat, matiere.typee AS mat_type
+    FROM famille_mat
+    JOIN matiere ON famille_mat.IdMatiere = matiere.IdMatiere
+    ORDER BY famille_mat.IdFamille
+");
+if ($resRec) {
+    while ($r = $resRec->fetch_assoc()) {
+        $familleRecipes[$r['IdFamille']][] = $r;
     }
-} catch (Exception $e) {
-    // Silently handle if recipes don't exist
 }
 
-// Use the loaded familles list for compatibility
-$familles = $famillesList;
+$conn->close();
 ?>
-
