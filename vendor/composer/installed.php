@@ -1,15 +1,24 @@
 <?php return array(
     'root' => array(
-        'name' => 'ramoclean/ramotejrab',
-        'pretty_version' => '1.0.0+no-version-set',
-        'version' => '1.0.0.0',
-        'reference' => null,
-        'type' => 'project',
+        'name' => '__root__',
+        'pretty_version' => 'dev-main',
+        'version' => 'dev-main',
+        'reference' => '2248dc4d4aa8771477474043331d9db598abc967',
+        'type' => 'library',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
         'dev' => true,
     ),
     'versions' => array(
+        '__root__' => array(
+            'pretty_version' => 'dev-main',
+            'version' => 'dev-main',
+            'reference' => '2248dc4d4aa8771477474043331d9db598abc967',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../../',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
         'mongodb/builder' => array(
             'dev_requirement' => false,
             'replaced' => array(
@@ -17,9 +26,9 @@
             ),
         ),
         'mongodb/mongodb' => array(
-            'pretty_version' => '1.21.3',
-            'version' => '1.21.3.0',
-            'reference' => 'b8f569ec52542d2f1bfca88286f20d14a7f72536',
+            'pretty_version' => '2.3.0',
+            'version' => '2.3.0.0',
+            'reference' => '12e56461166d915e3dd8e4969ad0940ed5207d88',
             'type' => 'library',
             'install_path' => __DIR__ . '/../mongodb/mongodb',
             'aliases' => array(),
@@ -34,12 +43,12 @@
             'aliases' => array(),
             'dev_requirement' => false,
         ),
-        'ramoclean/ramotejrab' => array(
-            'pretty_version' => '1.0.0+no-version-set',
-            'version' => '1.0.0.0',
-            'reference' => null,
-            'type' => 'project',
-            'install_path' => __DIR__ . '/../../',
+        'symfony/polyfill-php85' => array(
+            'pretty_version' => 'v1.37.0',
+            'version' => '1.37.0.0',
+            'reference' => 'fcfa4973a9917cef23f2e38774da74a2b7d115ee',
+            'type' => 'library',
+            'install_path' => __DIR__ . '/../symfony/polyfill-php85',
             'aliases' => array(),
             'dev_requirement' => false,
         ),
